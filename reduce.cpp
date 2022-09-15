@@ -30,7 +30,7 @@ torch::Tensor reduce(torch::Tensor input, torch::Tensor keys, int64_t col) {
     );
     for (int i = 0; i < unique_entries.sizes()[0]; i++) {
         auto idx = torch::where(key == unique_entries[i])[0];
-        reduced_input.index({i, "..."}) = torch::sum(input.index({idx, "..."}), 0);
+        reduced_input.index_put_({i, "..."}, torch::sum(input.index({idx, "..."}), 0));
     }
     // TODO replace for loop with cuda stuff
     // AT_DISPATCH_FLOATING_TYPES(gates.type(), "reduce_cuda_kernel", ([&] {
