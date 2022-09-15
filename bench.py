@@ -47,5 +47,8 @@ if __name__ == "__main__":
     forward, backward = bench(reduce_python.reduce, X, X_keys, 0)
     print(f"python function =   {1e3 * forward:.3} ms    -   {1e3 * backward:.3} ms")
 
+    forward, backward = bench(reduce_python.reduce_custom_autograd, X, X_keys, 0)
+    print(f"python autograd =   {1e3 * forward:.3} ms    -   {1e3 * backward:.3} ms")
+
     forward, backward = bench(reduce_cpp.reduce, X, X_keys, 0)
     print(f"C++ function    =   {1e3 * forward:.3} ms    -   {1e3 * backward:.3} ms")
