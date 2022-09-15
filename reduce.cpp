@@ -4,12 +4,13 @@
 
 
 torch::Tensor reduce(torch::Tensor input, torch::Tensor keys, int64_t col) {
-  /* Accumlates the entries in the first dimensions of the input tensort according to the keys in column col with the same value
+  /* Accumulates the entries in the first dimensions of the input tensors
+   * according to the keys in column col with the same value
    *
-   * @param input The tensor to be reduced
-   * @param keys The meta information about the first dimension of the input
-   * @param col The column number of key in keys to be used for the reduction
-   * @return The input tensor with the accumulated entries in the first dimension
+   * @param input The tensor to be reduced @param keys The meta information
+   * about the first dimension of the input @param col The column number of key
+   * in keys to be used for the reduction @return The input tensor with the
+   * accumulated entries in the first dimension
    */
 
   // unique is used differently on the c++ frontend
@@ -17,8 +18,7 @@ torch::Tensor reduce(torch::Tensor input, torch::Tensor keys, int64_t col) {
   // https://pytorch.org/cppdocs/api/function_namespaceat_1a70a940329a0c5d01c1f3e651f7acec98.html
   torch::Tensor key = keys.index({"...", col});
   torch::Tensor unique_entries, _ue_idx, _ue_count;
-  std::tie (unique_entries, _ue_idx, _ue_count) = 
-      at::unique_dim(key, false, false, false);
+  std::tie (unique_entries, _ue_idx, _ue_count) = at::unique_dim(key, false, false, false);
   // ArrayRef -> vector
   std::vector<int64_t> reduced_shape(std::begin(input.sizes()), std::end(input.sizes()));
   reduced_shape[0] = unique_entries.sizes()[0];
@@ -38,4 +38,3 @@ torch::Tensor reduce(torch::Tensor input, torch::Tensor keys, int64_t col) {
   //}));
   return reduced_input;
 }
-
