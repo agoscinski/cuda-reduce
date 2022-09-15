@@ -17,6 +17,12 @@ The tests use the JIT compile solution
 python tests.py
 ```
 
+### Benchmark the different implementations
+
+```
+python bench.py
+```
+
 ### Compile c++ code with cmake
 ```
 mkdir build
