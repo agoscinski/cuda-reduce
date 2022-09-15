@@ -62,6 +62,13 @@ if __name__ == "__main__":
             (X, X_keys, dim),
             verbose=True,
         )
+        test_same_result(
+            "python / C++ autograd",
+            reduce_python.reduce,
+            reduce_cpp.reduce_custom_autograd,
+            (X, X_keys, dim),
+            verbose=True,
+        )
 
     # large tests
     n = 100
@@ -80,13 +87,29 @@ if __name__ == "__main__":
             reduce_python.reduce,
             reduce_python.reduce_custom_autograd,
             (X, X_keys, dim),
-            verbose=True,
+            verbose=False,
+        )
+        test_same_result(
+            "python / C++ autograd",
+            reduce_python.reduce,
+            reduce_cpp.reduce_custom_autograd,
+            (X, X_keys, dim),
+            verbose=False,
         )
 
     # custom autograd checks
-    X = torch.rand((n, 10, 6, 6), requires_grad=True, dtype=torch.float64)
+    # X = torch.rand((n, 10, 6, 6), requires_grad=True, dtype=torch.float64)
+    X = torch.rand((4, 2), requires_grad=True, dtype=torch.float64)
+    X_keys = torch.randint(2, (4, 4))
+    dim = 2
     torch.autograd.gradcheck(
         reduce_python.reduce_custom_autograd,
+        (X, X_keys, dim),
+        fast_mode=True,
+    )
+
+    torch.autograd.gradcheck(
+        reduce_cpp.reduce_custom_autograd,
         (X, X_keys, dim),
         fast_mode=True,
     )

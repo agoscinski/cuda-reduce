@@ -12,7 +12,7 @@ reduce_cpp = torch.utils.cpp_extension.load(
 )
 
 
-def bench(function, input, input_keys, dim, n_iters=100):
+def bench(function, input, input_keys, dim, n_iters=10):
     start = time.time()
     for _ in range(n_iters):
         function(input, input_keys, dim)
@@ -39,16 +39,19 @@ if __name__ == "__main__":
     n_features = 1000
 
     torch.manual_seed(0xDEADBEEF)
-    X = torch.rand((n_samples, n_features), requires_grad=True, dtype=torch.float64)
+    X = torch.rand((n_samples, 7, n_features), requires_grad=True, dtype=torch.float64)
     X_keys = torch.randint(4, (n_samples, 3), dtype=torch.int32)
 
     print("implementation  | forward pass | backward pass")
 
     forward, backward = bench(reduce_python.reduce, X, X_keys, 0)
-    print(f"python function =   {1e3 * forward:.3} ms    -   {1e3 * backward:.3} ms")
+    print(f"python function =   {1e3 * forward:.3} ms    -   {1e3 * backward:.5} ms")
 
     forward, backward = bench(reduce_python.reduce_custom_autograd, X, X_keys, 0)
-    print(f"python autograd =   {1e3 * forward:.3} ms    -   {1e3 * backward:.3} ms")
+    print(f"python autograd =   {1e3 * forward:.3} ms    -   {1e3 * backward:.5} ms")
 
     forward, backward = bench(reduce_cpp.reduce, X, X_keys, 0)
-    print(f"C++ function    =   {1e3 * forward:.3} ms    -   {1e3 * backward:.3} ms")
+    print(f"C++ function    =   {1e3 * forward:.3} ms    -   {1e3 * backward:.5} ms")
+
+    forward, backward = bench(reduce_cpp.reduce_custom_autograd, X, X_keys, 0)
+    print(f"C++ function    =   {1e3 * forward:.3} ms    -   {1e3 * backward:.5} ms")
