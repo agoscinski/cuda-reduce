@@ -3,9 +3,10 @@ import torch.utils.cpp_extension
 
 import reduce_python
 
-reduce_cpp = torch.utils.cpp_extension.load(
+torch.utils.cpp_extension.load(
     name="reduce_cpp",
     sources=["reduce.cpp", "bindings.cpp"],
+    is_python_module=False,
 )
 
 
@@ -51,7 +52,7 @@ if __name__ == "__main__":
         test_same_result(
             "python / C++",
             reduce_python.reduce,
-            reduce_cpp.reduce,
+            torch.ops.reduce_cpp.reduce,
             (X, X_keys, dim),
             verbose=True,
         )
@@ -65,7 +66,7 @@ if __name__ == "__main__":
         test_same_result(
             "python / C++ autograd",
             reduce_python.reduce,
-            reduce_cpp.reduce_custom_autograd,
+            torch.ops.reduce_cpp.reduce_custom_autograd,
             (X, X_keys, dim),
             verbose=True,
         )
@@ -78,7 +79,7 @@ if __name__ == "__main__":
         test_same_result(
             "python / C++",
             reduce_python.reduce,
-            reduce_cpp.reduce,
+            torch.ops.reduce_cpp.reduce,
             (X, X_keys, dim),
             verbose=False,
         )
@@ -92,7 +93,7 @@ if __name__ == "__main__":
         test_same_result(
             "python / C++ autograd",
             reduce_python.reduce,
-            reduce_cpp.reduce_custom_autograd,
+            torch.ops.reduce_cpp.reduce_custom_autograd,
             (X, X_keys, dim),
             verbose=False,
         )
@@ -109,7 +110,7 @@ if __name__ == "__main__":
     )
 
     torch.autograd.gradcheck(
-        reduce_cpp.reduce_custom_autograd,
+        torch.ops.reduce_cpp.reduce_custom_autograd,
         (X, X_keys, dim),
         fast_mode=True,
     )

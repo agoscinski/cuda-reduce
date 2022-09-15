@@ -1,8 +1,11 @@
-#include <torch/extension.h>
-
+#include <torch/torch.h>
 #include "reduce.hh"
 
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    m.def("reduce", &reduce, "");
-    m.def("reduce_custom_autograd", &reduce_custom_autograd, "");
+TORCH_LIBRARY(reduce_cpp, m) {
+    m.def("reduce", reduce);
+    m.def("reduce_custom_autograd", reduce_custom_autograd);
 }
+
+// TORCH_LIBRARY_IMPL(reduce_cpp, CPU, m) {
+
+// }
