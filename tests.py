@@ -6,6 +6,7 @@ import reduce_python
 torch.utils.cpp_extension.load(
     name="reduce_cpp",
     sources=["reduce.cpp", "bindings.cpp"],
+    extra_cflags=["-O3"],
     is_python_module=False,
 )
 

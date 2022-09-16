@@ -55,4 +55,4 @@ if __name__ == "__main__":
     print(f"C++ function    =   {1e3 * forward:.3} ms    -   {1e3 * backward:.5} ms")
 
     forward, backward = bench(torch.ops.reduce_cpp.reduce_custom_autograd, X, X_keys, 0)
-    print(f"C++ function    =   {1e3 * forward:.3} ms    -   {1e3 * backward:.5} ms")
+    print(f"C++ autograd    =   {1e3 * forward:.3} ms    -   {1e3 * backward:.5} ms")

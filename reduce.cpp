@@ -17,10 +17,22 @@ torch::Tensor reduce(torch::Tensor input, torch::Tensor keys, int64_t col) {
     // https://pytorch.org/cppdocs/api/function_namespaceat_1a70a940329a0c5d01c1f3e651f7acec98.html
     torch::Tensor key = keys.index({"...", col});
     torch::Tensor unique_entries, _ue_idx, _ue_count;
-    std::tie(unique_entries, _ue_idx, _ue_count) = at::unique_dim(key, false, false, false);
+    std::tie(unique_entries, _ue_idx, _ue_count) = at::_unique2(key, false, false, false);
 
     std::vector<int64_t> reduced_shape = input.sizes().vec();
     reduced_shape[0] = unique_entries.sizes()[0];
+
+    torch::Tensor indexes = torch::empty(
+        {input.sizes()[0]},
+        torch::TensorOptions()
+            .dtype(torch::kInt32)
+            .device(input.device())
+    );
+
+    for (int i = 0; i < unique_entries.sizes()[0]; i++) {
+        auto idx = torch::where(key == unique_entries[i])[0];
+        indexes.index_put_({idx}, i);
+    }
 
     torch::Tensor reduced_input = torch::zeros(
         reduced_shape,
@@ -28,10 +40,7 @@ torch::Tensor reduce(torch::Tensor input, torch::Tensor keys, int64_t col) {
             .dtype(input.dtype())
             .device(input.device())
     );
-    for (int i = 0; i < unique_entries.sizes()[0]; i++) {
-        auto idx = torch::where(key == unique_entries[i])[0];
-        reduced_input.index_put_({i, "..."}, torch::sum(input.index({idx, "..."}), 0));
-    }
+    reduced_input.index_add_(0, indexes, input);
     // TODO replace for loop with cuda stuff
     // AT_DISPATCH_FLOATING_TYPES(gates.type(), "reduce_cuda_kernel", ([&] {
     //  reduce_cuda_kernel<scalar_t><<<blocks, threads>>>(
@@ -51,12 +60,24 @@ torch::autograd::variable_list ReduceAutograd::forward(
     torch::Tensor key = keys.index({"...", col});
 
     torch::Tensor unique_entries, _ue_idx, _ue_count;
-    std::tie(unique_entries, _ue_idx, _ue_count) = at::unique_dim(key, false, false, false);
+    std::tie(unique_entries, _ue_idx, _ue_count) = at::_unique2(key, false, false, false);
 
     std::vector<int64_t> reduced_shape = input.sizes().vec();
     reduced_shape[0] = unique_entries.sizes()[0];
 
+    torch::Tensor indexes = torch::empty(
+        {input.sizes()[0]},
+        torch::TensorOptions()
+            .dtype(torch::kInt32)
+            .device(input.device())
+    );
+
     auto reduce_mapping = std::vector<torch::Tensor>();
+    for (int i = 0; i < unique_entries.sizes()[0]; i++) {
+        auto idx = torch::where(key == unique_entries[i])[0];
+        indexes.index_put_({idx}, i);
+        reduce_mapping.push_back(idx);
+    }
 
     torch::Tensor reduced_input = torch::zeros(
         reduced_shape,
@@ -64,11 +85,7 @@ torch::autograd::variable_list ReduceAutograd::forward(
             .dtype(input.dtype())
             .device(input.device())
     );
-    for (int i = 0; i < unique_entries.sizes()[0]; i++) {
-        auto idx = torch::where(key == unique_entries[i])[0];
-        reduce_mapping.push_back(idx);
-        reduced_input.index_put_({i, "..."}, torch::sum(input.index({idx, "..."}), 0));
-    }
+    reduced_input.index_add_(0, indexes, input);
 
     ctx->save_for_backward({input});
     ctx->saved_data["reduce_mapping"] = reduce_mapping;
