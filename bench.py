@@ -23,7 +23,7 @@ def bench(function, input, input_keys, dim, n_iters=10):
 
     elapsed = 0
     for _ in range(n_iters):
-        result = function(input, input_keys, dim)
+        result, _ = function(input, input_keys, dim)
         summed = result.sum()
 
         start = time.time()

@@ -20,12 +20,13 @@ def test_same_result(
 ):
     (input, input_keys, dim) = args
 
-    reduced_1 = function_1(input, input_keys, dim)
-    reduced_2 = function_2(input, input_keys, dim)
+    reduced_1, reduced_keys_1 = function_1(input, input_keys, dim)
+    reduced_2, reduced_keys_2 = function_2(input, input_keys, dim)
 
+    same_keys = torch.all(reduced_keys_1 == reduced_keys_2)
     same_shape = reduced_1.shape == reduced_2.shape
     all_close = torch.allclose(reduced_1, reduced_2)
-    test_fails = not same_shape or not all_close
+    test_fails = not same_keys or not same_shape or not all_close
 
     if test_fails and verbose:
         print(f"tests failed for {context}")
@@ -35,6 +36,7 @@ def test_same_result(
         print("    reduced_1\n", reduced_1)
         print("    reduced_2\n", reduced_2)
 
+    assert same_keys, f"{context}: keys error {reduced_keys_1} vs {reduced_keys_2}"
     assert same_shape, f"{context}: shape error {reduced_1.shape} vs {reduced_2.shape}"
 
     error = torch.linalg.norm(reduced_1 - reduced_2)

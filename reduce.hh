@@ -1,6 +1,6 @@
 #include <torch/torch.h>
 
-torch::Tensor reduce(torch::Tensor input, torch::Tensor keys, int64_t col);
+std::vector<torch::Tensor> reduce(torch::Tensor input, torch::Tensor keys, int64_t col);
 
 class ReduceAutograd : public torch::autograd::Function<ReduceAutograd> {
 public:
@@ -17,4 +17,4 @@ public:
     );
 };
 
-torch::Tensor reduce_custom_autograd(torch::Tensor input, torch::Tensor keys, int64_t col);
+std::vector<torch::Tensor> reduce_custom_autograd(torch::Tensor input, torch::Tensor keys, int64_t col);
