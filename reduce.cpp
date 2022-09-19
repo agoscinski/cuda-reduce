@@ -17,7 +17,7 @@ torch::Tensor reduce(torch::Tensor input, torch::Tensor keys, int64_t col) {
     // https://pytorch.org/cppdocs/api/function_namespaceat_1a70a940329a0c5d01c1f3e651f7acec98.html
     torch::Tensor key = keys.index({"...", col});
     torch::Tensor unique_entries, _ue_idx, _ue_count;
-    std::tie(unique_entries, _ue_idx, _ue_count) = at::_unique2(key, false, false, false);
+    std::tie(unique_entries, _ue_idx, _ue_count) = at::_unique2(key, true, false, false);
 
     std::vector<int64_t> reduced_shape = input.sizes().vec();
     reduced_shape[0] = unique_entries.sizes()[0];
@@ -60,7 +60,7 @@ torch::autograd::variable_list ReduceAutograd::forward(
     torch::Tensor key = keys.index({"...", col});
 
     torch::Tensor unique_entries, _ue_idx, _ue_count;
-    std::tie(unique_entries, _ue_idx, _ue_count) = at::_unique2(key, false, false, false);
+    std::tie(unique_entries, _ue_idx, _ue_count) = at::_unique2(key, true, false, false);
 
     std::vector<int64_t> reduced_shape = input.sizes().vec();
     reduced_shape[0] = unique_entries.sizes()[0];
