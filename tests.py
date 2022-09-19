@@ -101,6 +101,8 @@ if __name__ == "__main__":
             verbose=False,
         )
 
+        # TODO(Guillaume): add more tests for gradients here
+
     # custom autograd checks
     # X = torch.rand((n, 10, 6, 6), requires_grad=True, dtype=torch.float64)
     X = torch.rand((4, 2), requires_grad=True, dtype=torch.float64)

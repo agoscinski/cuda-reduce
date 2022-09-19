@@ -2,7 +2,15 @@
 
 #include "reduce.hh"
 
-std::vector<torch::Tensor> reduce(torch::Tensor input, torch::Tensor keys, int64_t col) {
+std::vector<std::vector<torch::Tensor>> reduce(
+    torch::Tensor input,
+    torch::Tensor keys,
+    int64_t col,
+    torch::optional<torch::Tensor> position_grad,
+    torch::optional<torch::Tensor> position_grad_keys,
+    torch::optional<torch::Tensor> cell_grad,
+    torch::optional<torch::Tensor> cell_grad_keys
+) {
     /* Accumulates the entries in the first dimensions of the input tensors
      * according to the keys in column col with the same value
      *
@@ -42,28 +50,39 @@ std::vector<torch::Tensor> reduce(torch::Tensor input, torch::Tensor keys, int64
     );
     reduced_input.index_add_(0, indexes, input);
 
-    return {reduced_input, reduced_keys};
+    return {
+        // values
+        {reduced_input, reduced_keys},
+        // positions grad
+        {torch::Tensor(), torch::Tensor()},
+        // cell grad
+        {torch::Tensor(), torch::Tensor()}
+    };
 }
 
 torch::autograd::variable_list ReduceAutograd::forward(
     torch::autograd::AutogradContext *ctx,
-    torch::Tensor input,
+    torch::Tensor values,
     torch::Tensor keys,
-    int64_t col
+    int64_t col,
+    torch::optional<torch::Tensor> position_grad,
+    torch::optional<torch::Tensor> position_grad_keys,
+    torch::optional<torch::Tensor> cell_grad,
+    torch::optional<torch::Tensor> cell_grad_keys
 ) {
     torch::Tensor key = keys.index({"...", col});
 
     torch::Tensor reduced_keys, _ue_idx, _ue_count;
     std::tie(reduced_keys, _ue_idx, _ue_count) = at::_unique2(key, true, false, false);
 
-    std::vector<int64_t> reduced_shape = input.sizes().vec();
+    std::vector<int64_t> reduced_shape = values.sizes().vec();
     reduced_shape[0] = reduced_keys.sizes()[0];
 
     torch::Tensor indexes = torch::empty(
-        {input.sizes()[0]},
+        {values.sizes()[0]},
         torch::TensorOptions()
             .dtype(torch::kInt32)
-            .device(input.device())
+            .device(values.device())
     );
 
     auto reduce_mapping = std::vector<torch::Tensor>();
@@ -73,19 +92,19 @@ torch::autograd::variable_list ReduceAutograd::forward(
         reduce_mapping.push_back(idx);
     }
 
-    torch::Tensor reduced_input = torch::zeros(
+    torch::Tensor reduced_values = torch::zeros(
         reduced_shape,
         torch::TensorOptions()
-            .dtype(input.dtype())
-            .device(input.device())
+            .dtype(values.dtype())
+            .device(values.device())
     );
-    reduced_input.index_add_(0, indexes, input);
+    reduced_values.index_add_(0, indexes, values);
 
-    ctx->save_for_backward({input});
+    ctx->save_for_backward({values});
     ctx->saved_data["reduce_mapping"] = reduce_mapping;
     ctx->mark_non_differentiable({reduced_keys});
 
-    return {reduced_input, reduced_keys};
+    return {reduced_values, reduced_keys}; // TODO: return the right thing
 }
 
 torch::autograd::variable_list ReduceAutograd::backward(
@@ -105,9 +124,40 @@ torch::autograd::variable_list ReduceAutograd::backward(
         }
     }
 
-    return {input_grad, torch::Tensor(), torch::Tensor()};
+    return {
+        // values & keys
+        input_grad,
+        torch::Tensor(),
+        // dim
+        torch::Tensor(),
+        // postion grad & keys
+        torch::Tensor(),
+        torch::Tensor(),
+        // cell grad & keys
+        torch::Tensor(),
+        torch::Tensor(),
+    };
 }
 
-std::vector<torch::Tensor> reduce_custom_autograd(torch::Tensor input, torch::Tensor keys, int64_t col) {
-    return ReduceAutograd::apply(input, keys, col);
+std::vector<std::vector<torch::Tensor>> reduce_custom_autograd(
+    torch::Tensor values,
+    torch::Tensor keys,
+    int64_t col,
+    torch::optional<torch::Tensor> position_grad,
+    torch::optional<torch::Tensor> position_grad_keys,
+    torch::optional<torch::Tensor> cell_grad,
+    torch::optional<torch::Tensor> cell_grad_keys
+) {
+    auto result = ReduceAutograd::apply(
+        values,
+        keys,
+        col,
+        std::move(position_grad),
+        std::move(position_grad_keys),
+        std::move(cell_grad),
+        std::move(cell_grad_keys)
+    );
+
+    // return {{result[0], result[1]}, {result[2], result[3]}, {result[4], result[5]}};
+    return {{result[0], result[1]}, {torch::Tensor(), torch::Tensor()}, {torch::Tensor(), torch::Tensor()}};
 }

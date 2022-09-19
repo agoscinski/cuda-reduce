@@ -25,8 +25,8 @@ def bench(function, input, input_keys, dim, n_iters=10):
 
     elapsed = 0
     for _ in range(n_iters):
-        result, _ = function(input, input_keys, dim)
-        summed = result.sum()
+        values, _, _ = function(input, input_keys, dim)
+        summed = values[0].sum()
 
         start = time.time()
         summed.backward()
@@ -37,33 +37,59 @@ def bench(function, input, input_keys, dim, n_iters=10):
     return direct, backward
 
 
+def extract_from_equistore(block):
+    samples = torch.from_numpy(block.samples.copy().view(dtype=np.int32))
+    samples = samples.reshape(block.samples.shape[0], -1)
+
+    positions_grad = block.gradient("positions")
+    positions_grad_samples = torch.from_numpy(
+        positions_grad.samples.copy().view(dtype=np.int32)
+    )
+    positions_grad_samples = positions_grad_samples.reshape(
+        positions_grad.samples.shape[0], -1
+    )
+
+    values = (block.values, samples)
+    positions_grad = (positions_grad.data, positions_grad_samples)
+    cell_grad = (None, None)
+    return values, positions_grad, cell_grad
+
+
 def bench_descriptor(function, descriptor, n_iters=10):
     start = time.time()
 
     for _ in range(n_iters):
         for _, block in descriptor:
-            keys = torch.from_numpy(block.samples.view(dtype=np.int32))
-            function(block.values, keys.reshape(block.samples.shape[0], -1), 0)
+            values, positions_grad, cell_grad = extract_from_equistore(block)
+            function(*values, 0, *positions_grad, *cell_grad)
 
     elapsed = time.time() - start
     direct = elapsed / n_iters
 
-    elapsed = 0
+    elapsed_values = 0
+    elapsed_grad = 0
     for _ in range(n_iters):
         for _, block in descriptor:
-            keys = torch.from_numpy(block.samples.view(dtype=np.int32))
-            result, _ = function(
-                block.values, keys.reshape(block.samples.shape[0], -1), 0
+            values, positions_grad, cell_grad = extract_from_equistore(block)
+            values, positions_grad, _ = function(
+                *values, 0, *positions_grad, *cell_grad
             )
-            summed = result.sum()
 
+            summed = values[0].sum()
             start = time.time()
             summed.backward()
-            elapsed += time.time() - start
+            elapsed_values += time.time() - start
 
-    backward = elapsed / n_iters
+            if positions_grad[0] is not None:
+                summed = positions_grad[0].sum()
+                start = time.time()
+                summed.backward()
+                elapsed_grad += time.time() - start
 
-    return direct, backward
+    backward_values = elapsed_values / n_iters
+    backward_grad = elapsed_grad / n_iters
+
+    return direct, backward_values, backward_grad
 
 
 def create_real_data(file, subset):
@@ -88,7 +114,7 @@ def create_real_data(file, subset):
 
     blocks = []
     for _, block in descriptor:
-        block = TensorBlock(
+        new_block = TensorBlock(
             values=torch.tensor(block.values, requires_grad=True),
             samples=block.samples,
             components=block.components,
@@ -97,14 +123,14 @@ def create_real_data(file, subset):
 
         for parameter in block.gradients_list():
             gradient = block.gradient(parameter)
-            block.add_gradient(
+            new_block.add_gradient(
                 parameter,
                 data=torch.tensor(gradient.data, requires_grad=True),
                 samples=gradient.samples,
                 components=gradient.components,
             )
 
-        blocks.append(block)
+        blocks.append(new_block)
 
     return TensorMap(descriptor.keys, blocks)
 
@@ -134,13 +160,21 @@ if __name__ == "__main__":
     print(f"C++ autograd    =   {1e3 * forward:.3} ms    -   {1e3 * backward:.5} ms")
 
     # Real data
-    descriptor = create_real_data("random-methane-10k.extxyz", ":1000")
+    descriptor = create_real_data("random-methane-10k.extxyz", ":100")
 
     print("\nREAL DATA")
-    print("implementation  | forward pass | backward pass")
+    print("implementation  | forward pass | backward values | backward grad")
 
-    forward, backward = bench_descriptor(reduce_python.reduce, descriptor)
-    print(f"python function =   {1e3 * forward:.3} ms    -   {1e3 * backward:.5} ms")
+    forward, backward_v, backward_g = bench_descriptor(reduce_python.reduce, descriptor)
+    forward = f"{1e3 * forward:.5} ms"
+    backward_v = f"{1e3 * backward_v:.5} ms"
+    backward_g = f"{1e3 * backward_g:.5} ms"
+    print(f"python function =   {forward}  -    {backward_v}     -   {backward_g}")
 
-    forward, backward = bench_descriptor(torch.ops.reduce_cpp.reduce, descriptor)
-    print(f"C++ function =   {1e3 * forward:.3} ms    -   {1e3 * backward:.5} ms")
+    forward, backward_v, backward_g = bench_descriptor(
+        torch.ops.reduce_cpp.reduce, descriptor
+    )
+    forward = f"{1e3 * forward:.5} ms"
+    backward_v = f"{1e3 * backward_v:.5} ms"
+    backward_g = f"{1e3 * backward_g:.5} ms"
+    print(f"c++ function    =   {forward}  -    {backward_v}     -   {backward_g}")
