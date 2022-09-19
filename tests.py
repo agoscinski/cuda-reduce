@@ -58,6 +58,13 @@ if __name__ == "__main__":
             verbose=True,
         )
         test_same_result(
+            "python / C++",
+            reduce_python.reduce,
+            reduce_python.reduce2,
+            (X, X_keys, dim),
+            verbose=True,
+        )
+        test_same_result(
             "python / py autograd",
             reduce_python.reduce,
             reduce_python.reduce_custom_autograd,
@@ -81,6 +88,13 @@ if __name__ == "__main__":
             "python / C++",
             reduce_python.reduce,
             torch.ops.reduce_cpp.reduce,
+            (X, X_keys, dim),
+            verbose=False,
+        )
+        test_same_result(
+            "python / C++",
+            reduce_python.reduce,
+            reduce_python.reduce2,
             (X, X_keys, dim),
             verbose=False,
         )

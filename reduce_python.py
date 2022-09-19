@@ -6,15 +6,26 @@ def reduce(input, keys, dim):
     unique_entries = torch.unique(keys[:, dim])
 
     mapping = torch.empty(input.shape[0], dtype=torch.int32, device=input.device)
+    index = torch.arange(len(unique_entries), dtype=torch.int32, device=input.device)
     for i, unique_entry in enumerate(unique_entries):
         idx = torch.where(keys[:, dim] == unique_entry)[0]
-        mapping.index_put_(
-            (idx,), torch.tensor(i, dtype=torch.int32, device=input.device)
-        )
+        mapping.index_put_((idx,), index[i])
 
     new_shape = (len(unique_entries),) + input.shape[1:]
     reduced_input = torch.zeros(new_shape, dtype=input.dtype, device=input.device)
     reduced_input.index_add_(0, mapping, input)
+
+    return reduced_input
+
+
+def reduce2(input, keys, dim):
+    assert keys.dim() == 2, "keys should have only two dimensions"
+    unique_entries = torch.unique(keys[:, dim])
+    shape = input.shape
+
+    idx = torch.zeros(unique_entries.amax()+1, len(input), dtype=input.dtype, device=input.device)
+    idx[keys[:, dim].long(), torch.arange(len(input))] = 1
+    reduced_input = (idx @ input.view(len(input), -1)).view(len(unique_entries), *shape[1:])
 
     return reduced_input
 
