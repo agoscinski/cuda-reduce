@@ -4,6 +4,31 @@ import torch
 from torch import Tensor
 
 
+def _reduce_grad(gradient: Tensor, keys: Tensor, indexes: Tensor) -> (Tensor, Tensor):
+    device = gradient.device
+    dtype = gradient.dtype
+
+    new_keys = keys.clone()
+    for grad_i, grad_key in enumerate(keys):
+        new_keys[grad_i, 0] = indexes[grad_key[0]]
+
+    reduced_keys = torch.unique(new_keys, dim=0)
+
+    grad_indexes = torch.empty(gradient.shape[0], dtype=torch.int32, device=device)
+    for i, reduced_key in enumerate(reduced_keys):
+        # FIXME: this might be slow?
+        idx = torch.all(new_keys == reduced_key[None, :], axis=1)
+        grad_indexes.index_put_(
+            (idx,), torch.tensor(i, dtype=torch.int32, device=device)
+        )
+
+    new_shape = (len(reduced_keys),) + gradient.shape[1:]
+    reduced_gradient = torch.zeros(new_shape, dtype=dtype, device=device)
+    reduced_gradient.index_add_(0, grad_indexes, gradient)
+
+    return reduced_gradient, reduced_keys
+
+
 def reduce(
     values: Tensor,
     keys: Tensor,
@@ -34,46 +59,22 @@ def reduce(
     assert keys.dim() == 2, "keys should have only two dimensions"
     reduced_keys = torch.unique(keys[:, dim])
 
-    mapping = torch.empty(values.shape[0], dtype=torch.int32, device=device)
-    all_indexes = []
+    indexes = torch.empty(values.shape[0], dtype=torch.int32, device=device)
     for i, reduced_key in enumerate(reduced_keys):
         idx = torch.where(keys[:, dim] == reduced_key)[0]
-        mapping.index_put_((idx,), torch.tensor(i, dtype=torch.int32, device=device))
-        all_indexes.append(idx)
+        indexes.index_put_((idx,), torch.tensor(i, dtype=torch.int32, device=device))
 
     new_shape = (len(reduced_keys),) + values.shape[1:]
     reduced_values = torch.zeros(new_shape, dtype=dtype, device=device)
-    reduced_values.index_add_(0, mapping, values)
+    reduced_values.index_add_(0, indexes, values)
 
     if positions_grad is not None:
         assert positions_grad_keys is not None
         assert positions_grad.device == device
         assert positions_grad.dtype == dtype
 
-        new_positions_grad_keys = torch.empty_like(positions_grad_keys)
-        for grad_i, grad_key in enumerate(positions_grad_keys):
-            for new_i, summed_idx in enumerate(all_indexes):
-                if grad_key[0] in summed_idx:
-                    new_positions_grad_keys[grad_i, 0] = new_i
-                    new_positions_grad_keys[grad_i, 1:] = grad_key[1:]
-                    break
-
-        reduced_positions_grad_keys = torch.unique(new_positions_grad_keys, dim=0)
-
-        grad_mapping = torch.empty(
-            positions_grad.shape[0], dtype=torch.int32, device=device
-        )
-        for i, reduced_key in enumerate(reduced_positions_grad_keys):
-            # FIXME: this might be slow?
-            idx = torch.all(new_positions_grad_keys == reduced_key[None, :], axis=1)
-            grad_mapping.index_put_(
-                (idx,), torch.tensor(i, dtype=torch.int32, device=device)
-            )
-
-        new_shape = (len(reduced_positions_grad_keys),) + positions_grad.shape[1:]
-        reduced_positions_grad = torch.zeros(new_shape, dtype=dtype, device=device)
-        reduced_positions_grad.index_add_(0, grad_mapping, positions_grad)
-
+        result = _reduce_grad(positions_grad, positions_grad_keys, indexes)
+        reduced_positions_grad, reduced_positions_grad_keys = result
     else:
         reduced_positions_grad = None
         reduced_positions_grad_keys = None
@@ -82,48 +83,35 @@ def reduce(
         assert cell_grad_keys is not None
         assert cell_grad.device == device
 
-        raise Exception("not implemented yet")
+        result = _reduce_grad(cell_grad, cell_grad_keys, indexes)
+        reduced_cell_grad, reduced_cell_grad_keys = result
     else:
         reduced_cell_grad = None
         reduced_cell_grad_keys = None
 
-    reduced_values = (reduced_values, reduced_keys)
+    reduced_values = (reduced_values, reduced_keys.reshape(-1, 1))
     reduced_positions_grad = (reduced_positions_grad, reduced_positions_grad_keys)
     reduced_cell_grad = (reduced_cell_grad, reduced_cell_grad_keys)
     return (reduced_values, reduced_positions_grad, reduced_cell_grad)
 
 
-class ReduceAutograd(torch.autograd.Function):
+class ReduceValuesAutograd(torch.autograd.Function):
     @staticmethod
     def forward(
-        ctx,
-        values: Tensor,
-        keys: Tensor,
-        dim: int,
-        positions_grad: Optional[Tensor] = None,
-        positions_grad_keys: Optional[Tensor] = None,
-        cell_grad: Optional[Tensor] = None,
-        cell_grad_keys: Optional[Tensor] = None,
-    ) -> (
-        Tensor,
-        Tensor,
-        Optional[Tensor],
-        Optional[Tensor],
-        Optional[Tensor],
-        Optional[Tensor],
-    ):
+        ctx, values: Tensor, keys: Tensor, dim: int
+    ) -> (Tensor, Tensor, Tensor):
         device = values.device
         dtype = values.dtype
 
         assert keys.dim() == 2, "keys should have only two dimensions"
         reduced_keys = torch.unique(keys[:, dim])
 
-        indexes = torch.empty(values.shape[0], dtype=torch.int64, device=device)
+        indexes = torch.empty(values.shape[0], dtype=torch.int32, device=device)
         mapping = []
         for i, reduced_key in enumerate(reduced_keys):
             idx = torch.where(keys[:, dim] == reduced_key)[0]
             indexes.index_put_(
-                (idx,), torch.tensor(i, dtype=torch.int64, device=device)
+                (idx,), torch.tensor(i, dtype=torch.int32, device=device)
             )
             mapping.append(idx)
 
@@ -131,50 +119,72 @@ class ReduceAutograd(torch.autograd.Function):
         reduced_values = torch.zeros(new_shape, dtype=dtype, device=device)
         reduced_values.index_add_(0, indexes, values)
 
-        if positions_grad is not None:
-            assert positions_grad_keys is not None
-            assert positions_grad.device == device
-            assert positions_grad.dtype == dtype
-
         ctx.save_for_backward(values)
         ctx.reduce_mapping = mapping
 
         ctx.mark_non_differentiable(reduced_keys)
 
-        return reduced_values, reduced_keys, None, None, None, None
+        return reduced_values, reduced_keys.reshape(-1, 1), indexes
 
     @staticmethod
-    def backward(
-        ctx,
-        grad_reduced_values,
-        _grad_reduced_keys,
-        grad_reduced_positions_grad,
-        _grad_reduced_positions_grad_keys,
-        grad_reduced_cell_grad,
-        _grad_reduced_cell_grad_keys,
-    ):
-
+    def backward(ctx, grad_reduced_values, _grad_reduced_keys, _grad_indexes):
         (values,) = ctx.saved_tensors
 
-        input_grad = None
+        values_grad = None
         if values.requires_grad:
-            input_grad = torch.zeros_like(values)
+            values_grad = torch.zeros_like(values)
             for i, idx in enumerate(ctx.reduce_mapping):
-                input_grad[idx] = grad_reduced_values[i]
+                values_grad[idx] = grad_reduced_values[i]
 
-        return (
-            # values & keys
-            input_grad,
-            None,
-            # dim
-            None,
-            # positions grad & keys
-            None,
-            None,
-            # cell grad & keys
-            None,
-            None,
-        )
+        return values_grad, None, None
+
+
+class ReduceGradientAutograd(torch.autograd.Function):
+    @staticmethod
+    def forward(
+        ctx, gradient: Tensor, keys: Tensor, indexes: Tensor
+    ) -> (Tensor, Tensor):
+        device = gradient.device
+        dtype = gradient.dtype
+
+        new_keys = keys.clone()
+        for grad_i, grad_key in enumerate(keys):
+            new_keys[grad_i, 0] = indexes[grad_key[0]]
+
+        reduced_keys = torch.unique(new_keys, dim=0)
+
+        indexes = torch.empty(gradient.shape[0], dtype=torch.int32, device=device)
+        mapping = []
+        for i, reduced_key in enumerate(reduced_keys):
+            # FIXME: this might be slow?
+            idx = torch.all(new_keys == reduced_key[None, :], axis=1)
+            mapping.append(idx)
+            indexes.index_put_(
+                (idx,), torch.tensor(i, dtype=torch.int32, device=device)
+            )
+
+        new_shape = (len(reduced_keys),) + gradient.shape[1:]
+        reduced_gradient = torch.zeros(new_shape, dtype=dtype, device=device)
+        reduced_gradient.index_add_(0, indexes, gradient)
+
+        ctx.save_for_backward(gradient)
+        ctx.reduce_mapping = mapping
+        ctx.mark_non_differentiable(reduced_keys)
+
+        return reduced_gradient, reduced_keys
+
+    @staticmethod
+    def backward(ctx, grad_reduced_gradient, _grad_reduced_keys):
+        (gradient,) = ctx.saved_tensors
+
+        gradient_grad = None
+        if gradient.requires_grad:
+            gradient_grad = torch.zeros_like(gradient)
+            for i, idx in enumerate(ctx.reduce_mapping):
+                # TODO: use index_put here as well?
+                gradient_grad[idx] = grad_reduced_gradient[i]
+
+        return gradient_grad, None, None
 
 
 def reduce_custom_autograd(
@@ -190,13 +200,32 @@ def reduce_custom_autograd(
     (Optional[Tensor], Optional[Tensor]),
     (Optional[Tensor], Optional[Tensor]),
 ):
-    v, v_k, p, p_k, c, c_k = ReduceAutograd.apply(
-        values,
-        keys,
-        dim,
-        positions_grad,
-        positions_grad_keys,
-        cell_grad,
-        cell_grad_keys,
-    )
-    return (v, v_k), (p, p_k), (c, c_k)
+    device = values.device
+    dtype = values.dtype
+
+    values, keys, indexes = ReduceValuesAutograd.apply(values, keys, dim)
+
+    if positions_grad is not None:
+        assert positions_grad_keys is not None
+        assert positions_grad.device == device
+        assert positions_grad.dtype == dtype
+
+        results = ReduceGradientAutograd.apply(
+            positions_grad, positions_grad_keys, indexes
+        )
+
+        positions_grad, positions_grad_keys = results
+
+    if cell_grad is not None:
+        assert cell_grad_keys is not None
+        assert cell_grad.device == device
+        assert cell_grad.dtype == dtype
+
+        results = ReduceGradientAutograd.apply(cell_grad, cell_grad_keys, indexes)
+
+        cell_grad, cell_grad_keys = results
+
+    reduced_values = (values, keys)
+    reduced_positions_grad = (positions_grad, positions_grad_keys)
+    reduced_cell_grad = (cell_grad, keys)
+    return (reduced_values, reduced_positions_grad, reduced_cell_grad)

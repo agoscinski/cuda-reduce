@@ -26,7 +26,3 @@ TORCH_LIBRARY(reduce_cpp, m) {
         ) -> Tensor[][]
     )", reduce_custom_autograd);
 }
-
-// TORCH_LIBRARY_IMPL(reduce_cpp, CPU, m) {
-
-// }
