@@ -2,6 +2,11 @@
 
 #include "reduce.hh"
 
+#define ASSERT_THROW(x, message) do {if (!(x)) { throw std::runtime_error(message); } } while (false)
+#define CHECK_CPU(x) ASSERT_THROW(x.device() == torch::kCPU, #x " must be a CPU tensor")
+#define CHECK_CUDA(x) ASSERT_THROW(x.device() == torch::kCUDA, #x " must be a CUDA tensor")
+#define CHECK_CONTIGUOUS(x) ASSERT_THROW(x.is_contiguous(), #x " must be contiguous")
+
 static std::vector<torch::Tensor> _reduce_grad(
     torch::Tensor gradient,
     torch::Tensor keys,
@@ -150,11 +155,9 @@ torch::autograd::variable_list ReduceValuesAutograd::forward(
             .device(values.device())
     );
 
-    auto reduce_mapping = std::vector<torch::Tensor>();
     for (int i = 0; i < reduced_keys.sizes()[0]; i++) {
         auto idx = torch::where(key == reduced_keys[i])[0];
         indexes.index_put_({idx}, i);
-        reduce_mapping.push_back(idx);
     }
 
     torch::Tensor reduced_values = torch::zeros(
@@ -165,33 +168,77 @@ torch::autograd::variable_list ReduceValuesAutograd::forward(
     );
     reduced_values.index_add_(0, indexes, values);
 
-    ctx->save_for_backward({values});
-    ctx->saved_data["reduce_mapping"] = reduce_mapping;
+    ctx->save_for_backward({values, indexes});
     ctx->mark_non_differentiable({reduced_keys});
 
     return {reduced_values, reduced_keys.reshape({-1, 1}), indexes};
+}
+
+template <typename scalar_t>
+void reduce_backward_cpu(
+    scalar_t* full,
+    const scalar_t* reduced,
+    const int32_t* mapping,
+    int32_t n_samples,
+    int32_t other_sizes
+) {
+    // WTF: This is faster than serial code even with a single thread
+    #pragma omp parallel for private(n_samples, other_sizes)
+    for (int i=0; i<n_samples; i++) {
+        auto reduce_id = mapping[i];
+        for (int j=0; j<other_sizes; j++) {
+            full[i * other_sizes + j] = reduced[reduce_id * other_sizes + j];
+        }
+    }
 }
 
 torch::autograd::variable_list ReduceValuesAutograd::backward(
     torch::autograd::AutogradContext *ctx,
     torch::autograd::variable_list outputs_grad
 ) {
-    auto reduced_input_grad = outputs_grad[0];
-    auto input = ctx->get_saved_variables()[0];
-    auto reduce_mapping = ctx->saved_data["reduce_mapping"].toTensorVector();
+    auto reduced_values_grad = outputs_grad[0].contiguous();
+    auto values = ctx->get_saved_variables()[0];
+    auto indexes = ctx->get_saved_variables()[1];
 
-    auto input_grad = torch::Tensor();
-    if (input.requires_grad()) {
-        input_grad = torch::zeros_like(input);
+    auto values_grad = torch::Tensor();
+    if (values.requires_grad()) {
+        values_grad = torch::empty_like(values);
 
-        for (int i=0; i<reduce_mapping.size(); i++) {
-            input_grad.index_put_({reduce_mapping[i], "..."}, reduced_input_grad.index({i, "..."}));
+        CHECK_CONTIGUOUS(indexes);
+        CHECK_CONTIGUOUS(values_grad);
+        CHECK_CONTIGUOUS(reduced_values_grad);
+
+        auto n_samples = values_grad.sizes()[0];
+        auto other_sizes = 1;
+        auto reduced_other_sizes = 1;
+        for (int dim=1; dim<values_grad.sizes().size(); dim++) {
+            other_sizes *= values_grad.sizes()[dim];
+            reduced_other_sizes *= reduced_values_grad.sizes()[dim];
+        }
+        ASSERT_THROW(other_sizes == reduced_other_sizes, "wrong size");
+
+        if (values.device() == torch::kCPU) {
+            CHECK_CPU(values_grad);
+            CHECK_CPU(reduced_values_grad);
+            CHECK_CPU(indexes);
+
+            AT_DISPATCH_FLOATING_TYPES(values.type(), "reduce_backward_cpu", ([&] {
+                reduce_backward_cpu(
+                    values_grad.data<scalar_t>(),
+                    reduced_values_grad.data<scalar_t>(),
+                    indexes.data<int32_t>(),
+                    n_samples,
+                    other_sizes
+                );
+            }));
+        } else {
+            throw std::runtime_error("not implemented for this device");
         }
     }
 
     return {
         // values & keys
-        input_grad,
+        values_grad,
         torch::Tensor(),
         // dim
         torch::Tensor(),
@@ -214,20 +261,18 @@ torch::autograd::variable_list ReduceGradientAutograd::forward(
     auto unique_result = torch::unique_dim(new_keys, 0);
     auto reduced_keys = std::get<0>(unique_result);
 
-    torch::Tensor grad_indexes = torch::empty(
+    torch::Tensor gradient_indexes = torch::empty(
         {gradient.sizes()[0]},
         torch::TensorOptions()
             .dtype(torch::kInt32)
             .device(gradient.device())
     );
 
-    auto mapping = std::vector<torch::Tensor>();
     for (int i = 0; i < reduced_keys.sizes()[0]; i++) {
         // FIXME: this might be slow
         auto mask = new_keys.eq(reduced_keys.index({torch::indexing::Slice(i, i+1)}));
         auto idx = torch::all(mask, /*dim=*/1);
-        grad_indexes.index_put_({idx}, i);
-        mapping.push_back(idx);
+        gradient_indexes.index_put_({idx}, i);
     }
 
     std::vector<int64_t> reduced_shape = gradient.sizes().vec();
@@ -238,10 +283,9 @@ torch::autograd::variable_list ReduceGradientAutograd::forward(
             .dtype(gradient.dtype())
             .device(gradient.device())
     );
-    reduced_gradient.index_add_(0, grad_indexes, gradient);
+    reduced_gradient.index_add_(0, gradient_indexes, gradient);
 
-    ctx->save_for_backward({gradient});
-    ctx->saved_data["reduce_mapping"] = mapping;
+    ctx->save_for_backward({gradient, gradient_indexes});
     ctx->mark_non_differentiable({reduced_keys});
 
     return {reduced_gradient, reduced_keys};
@@ -251,16 +295,44 @@ torch::autograd::variable_list ReduceGradientAutograd::backward(
     torch::autograd::AutogradContext *ctx,
     torch::autograd::variable_list outputs_grad
 ) {
-    auto reduced_gradient_grad = outputs_grad[0];
+    auto reduced_gradient_grad = outputs_grad[0].contiguous();
     auto gradient = ctx->get_saved_variables()[0];
-    auto reduce_mapping = ctx->saved_data["reduce_mapping"].toTensorVector();
+    auto gradient_indexes = ctx->get_saved_variables()[1];
 
     auto gradient_grad = torch::Tensor();
     if (gradient.requires_grad()) {
-        gradient_grad = torch::zeros_like(gradient);
+        gradient_grad = torch::empty_like(gradient);
 
-        for (int i=0; i<reduce_mapping.size(); i++) {
-            gradient_grad.index_put_({reduce_mapping[i], "..."}, reduced_gradient_grad.index({i, "..."}));
+        CHECK_CONTIGUOUS(gradient_indexes);
+        CHECK_CONTIGUOUS(gradient_grad);
+        CHECK_CONTIGUOUS(reduced_gradient_grad);
+
+        auto n_samples = gradient_grad.sizes()[0];
+
+        auto other_sizes = 1;
+        auto reduced_other_sizes = 1;
+        for (int dim=1; dim<gradient_grad.sizes().size(); dim++) {
+            other_sizes *= gradient_grad.sizes()[dim];
+            reduced_other_sizes *= reduced_gradient_grad.sizes()[dim];
+        }
+        ASSERT_THROW(other_sizes == reduced_other_sizes, "wrong size");
+
+        if (gradient.device() == torch::kCPU) {
+            CHECK_CPU(gradient_grad);
+            CHECK_CPU(reduced_gradient_grad);
+            CHECK_CPU(gradient_indexes);
+
+            AT_DISPATCH_FLOATING_TYPES(gradient.type(), "reduce_backward_cpu", ([&] {
+                reduce_backward_cpu(
+                    gradient_grad.data<scalar_t>(),
+                    reduced_gradient_grad.data<scalar_t>(),
+                    gradient_indexes.data<int32_t>(),
+                    n_samples,
+                    other_sizes
+                );
+            }));
+        } else {
+            throw std::runtime_error("not implemented for this device");
         }
     }
 
