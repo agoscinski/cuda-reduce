@@ -10,6 +10,12 @@ torch.utils.cpp_extension.load(
     is_python_module=False,
 )
 
+torch.utils.cpp_extension.load(
+    name="reduce_cuda_cpp",
+    sources=["reduce_cuda.cu"],
+    extra_cflags=["-O3"],
+    is_python_module=False,
+)
 
 def test_same_result(
     context,
@@ -247,5 +253,15 @@ if __name__ == "__main__":
         (X, X_keys, dim, None, None, cell_grad, cell_grad_keys),
         fast_mode=True,
     )
+
+    X = X.to(device="cuda")
+    X_keys = X_keys.to(device="cuda")
+    torch.autograd.gradcheck(
+        lambda *args: torch.ops.reduce_cuda_cpp.reduce_custom_autograd(*args)[2][0],
+        (X, X_keys, dim, None, None, cell_grad, cell_grad_keys),
+        fast_mode=True,
+    )
+    X.to(device="cpu")
+    X_keys.to(device="cpu")
 
     print("All tests passed!")

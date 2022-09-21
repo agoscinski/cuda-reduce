@@ -14,6 +14,12 @@ torch.utils.cpp_extension.load(
     is_python_module=False,
 )
 
+torch.utils.cpp_extension.load(
+    name="reduce_cuda_cpp",
+    sources=["reduce_cuda.cu"],
+    extra_cflags=["-O3"],
+    is_python_module=False,
+)
 
 def bench(function, input, input_keys, dim, n_iters=10):
     start = time.time()
@@ -188,6 +194,12 @@ def bench_random():
     forward, backward = bench(torch.ops.reduce_cpp.reduce_custom_autograd, X, X_keys, 0)
     print(f"C++ autograd    =   {1e3 * forward:.3} ms    -   {1e3 * backward:.5} ms")
 
+    X = X.to(device="cuda")
+    X_keys = X_keys.to(device="cuda")
+    forward, backward = bench(torch.ops.reduce_cuda_cpp.reduce_custom_autograd, X, X_keys, 0)
+    print(f"C++ (cuda) function    =   {1e3 * forward:.3} ms    -   {1e3 * backward:.5} ms")
+    X.to(device="cpu")
+    X_keys.to(device="cpu")
 
 def bench_real_data():
     print("REAL DATA -- no forward gradients")
