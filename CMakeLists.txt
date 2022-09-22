@@ -18,7 +18,14 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Torch REQUIRED)
 
-add_library(reduce_cpp SHARED reduce.cpp bindings.cpp reduce.hh)
+add_library(reduce_cpp SHARED
+    src/reduce.cpp
+    src/bindings.cpp
+    src/reduce.hh
+    src/reduce_autograd.cpp
+    src/reduce_cpu.cpp
+    src/reduce_cuda.cu
+)
 target_link_libraries(reduce_cpp PUBLIC torch)
 
 add_executable(example_reduce example_reduce.cpp)

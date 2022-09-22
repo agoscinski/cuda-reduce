@@ -1,0 +1,46 @@
+#include <torch/torch.h>
+
+#include "reduce.hh"
+
+template <typename scalar_t>
+void reduce_backward_cpu_kernel(
+    scalar_t* full,
+    const scalar_t* reduced,
+    const int32_t* mapping,
+    int32_t n_samples,
+    int32_t other_sizes
+) {
+    // #pragma omp parallel
+    // {
+        // WTF: This is faster than serial code even with a single thread
+        // #pragma omp parallel for private(n_samples, other_sizes)
+        for (int i=0; i<n_samples; i++) {
+            auto reduce_id = mapping[i];
+            for (int j=0; j<other_sizes; j++) {
+                full[i * other_sizes + j] = reduced[reduce_id * other_sizes + j];
+            }
+        }
+    // }
+}
+
+void reduce_backward_cpu(
+    torch::Tensor& full,
+    const torch::Tensor& reduced,
+    const torch::Tensor& mapping,
+    int n_samples,
+    int other_sizes
+) {
+    CHECK_CPU(full);
+    CHECK_CPU(reduced);
+    CHECK_CPU(mapping);
+
+    AT_DISPATCH_FLOATING_TYPES(full.type(), "reduce_backward_cpu", ([&] {
+        reduce_backward_cpu_kernel(
+            full.data_ptr<scalar_t>(),
+            reduced.data_ptr<scalar_t>(),
+            mapping.data_ptr<int32_t>(),
+            n_samples,
+            other_sizes
+        );
+    }));
+}

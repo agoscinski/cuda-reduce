@@ -1,14 +1,8 @@
 import torch
-import torch.utils.cpp_extension
 
 import reduce_python
 
-torch.utils.cpp_extension.load(
-    name="reduce_cpp",
-    sources=["reduce.cpp", "bindings.cpp"],
-    extra_cflags=["-O3"],
-    is_python_module=False,
-)
+import load_cpp_extension
 
 
 def test_same_result(
@@ -124,6 +118,40 @@ def test_right_values():
         raise Exception("wrong gradients keys")
 
 
+def test_autograd(X, X_keys, dim, pos_grad, pos_grad_keys, cell_grad, cell_grad_keys):
+    torch.autograd.gradcheck(
+        lambda *args: reduce_python.reduce_custom_autograd(*args)[0][0],
+        (X, X_keys, dim),
+        fast_mode=True,
+    )
+
+    torch.autograd.gradcheck(
+        lambda *args: torch.ops.reduce_cpp.reduce_custom_autograd(*args)[0][0],
+        (X, X_keys, dim),
+        fast_mode=True,
+    )
+
+    torch.autograd.gradcheck(
+        lambda *args: reduce_python.reduce_custom_autograd(*args)[1][0],
+        (
+            X,
+            X_keys,
+            dim,
+            pos_grad,
+            pos_grad_keys,
+            None,
+            None,
+        ),
+        fast_mode=True,
+    )
+
+    torch.autograd.gradcheck(
+        lambda *args: reduce_python.reduce_custom_autograd(*args)[2][0],
+        (X, X_keys, dim, None, None, cell_grad, cell_grad_keys),
+        fast_mode=True,
+    )
+
+
 if __name__ == "__main__":
     # very rudimentary test for sanity checks, can be extended if needed
     torch.manual_seed(0)
@@ -143,18 +171,26 @@ if __name__ == "__main__":
             (X, X_keys, dim),
             verbose=True,
         )
-        test_same_result(
-            "python / py autograd",
-            reduce_python.reduce,
-            reduce_python.reduce_custom_autograd,
-            (X, X_keys, dim),
-            verbose=True,
-        )
+        # test_same_result(
+        #     "python / py autograd",
+        #     reduce_python.reduce,
+        #     reduce_python.reduce_custom_autograd,
+        #     (X, X_keys, dim),
+        #     verbose=True,
+        # )
         test_same_result(
             "python / C++ autograd",
             reduce_python.reduce,
             torch.ops.reduce_cpp.reduce_custom_autograd,
             (X, X_keys, dim),
+            verbose=True,
+        )
+
+        test_same_result(
+            "python / C++ autograd -- CUDA",
+            reduce_python.reduce,
+            torch.ops.reduce_cpp.reduce_custom_autograd,
+            (X.to(device="cuda"), X_keys.to(device="cuda"), dim),
             verbose=True,
         )
 
@@ -188,62 +224,21 @@ if __name__ == "__main__":
     # custom autograd checks
     X = torch.rand((n, 60), requires_grad=True, dtype=torch.float64)
     X_keys = torch.randint(2, (n, 4))
-    dim = 2
-    torch.autograd.gradcheck(
-        lambda *args: reduce_python.reduce_custom_autograd(*args)[0][0],
-        (X, X_keys, dim),
-        fast_mode=True,
-    )
-
-    torch.autograd.gradcheck(
-        lambda *args: torch.ops.reduce_cpp.reduce_custom_autograd(*args)[0][0],
-        (X, X_keys, dim),
-        fast_mode=True,
-    )
-
-    # check gradients of gradients
     pos_grad = torch.rand((3 * n, 3, 60), requires_grad=True, dtype=torch.float64)
     pos_grad_keys = torch.randint(n, (3 * n, 3), dtype=torch.int32)
     cell_grad = torch.rand((n, 3, 3, 60), requires_grad=True, dtype=torch.float64)
     cell_grad_keys = torch.randint(n, (n, 1), dtype=torch.int32)
-    torch.autograd.gradcheck(
-        lambda *args: reduce_python.reduce_custom_autograd(*args)[1][0],
-        (
-            X,
-            X_keys,
-            dim,
-            pos_grad,
-            pos_grad_keys,
-            None,
-            None,
-        ),
-        fast_mode=True,
-    )
 
-    torch.autograd.gradcheck(
-        lambda *args: reduce_python.reduce_custom_autograd(*args)[2][0],
-        (X, X_keys, dim, None, None, cell_grad, cell_grad_keys),
-        fast_mode=True,
-    )
+    test_autograd(X, X_keys, 2, pos_grad, pos_grad_keys, cell_grad, cell_grad_keys)
 
-    torch.autograd.gradcheck(
-        lambda *args: torch.ops.reduce_cpp.reduce_custom_autograd(*args)[1][0],
-        (
-            X,
-            X_keys,
-            dim,
-            pos_grad,
-            pos_grad_keys,
-            None,
-            None,
-        ),
-        fast_mode=True,
-    )
+    # autograd on CUDA
+    X = X.to(device="cuda")
+    X_keys = X_keys.to(device="cuda")
+    pos_grad = pos_grad.to(device="cuda")
+    pos_grad_keys = pos_grad_keys.to(device="cuda")
+    cell_grad = cell_grad.to(device="cuda")
+    cell_grad_keys = cell_grad_keys.to(device="cuda")
 
-    torch.autograd.gradcheck(
-        lambda *args: torch.ops.reduce_cpp.reduce_custom_autograd(*args)[2][0],
-        (X, X_keys, dim, None, None, cell_grad, cell_grad_keys),
-        fast_mode=True,
-    )
+    test_autograd(X, X_keys, 2, pos_grad, pos_grad_keys, cell_grad, cell_grad_keys)
 
     print("All tests passed!")

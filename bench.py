@@ -3,24 +3,10 @@ import time
 
 import numpy as np
 import torch
-import torch.utils.cpp_extension
 
 import reduce_python
 
-if sys.platform.startswith("darwin"):
-    extra_cflags = ["-O3", "-Xpreprocessor -fopenmp"]
-    extra_ldflags = ["-L/opt/homebrew/lib", "-lomp"]
-elif sys.platform.startswith("linux"):
-    extra_cflags = ["-O3", "-fopenmp"]
-    extra_ldflags = []
-
-torch.utils.cpp_extension.load(
-    name="reduce_cpp",
-    sources=["reduce.cpp", "bindings.cpp"],
-    extra_cflags=extra_cflags,
-    extra_ldflags=extra_ldflags,
-    is_python_module=False,
-)
+import load_cpp_extension
 
 
 def bench(function, input, input_keys, dim, n_iters=10):
@@ -78,6 +64,32 @@ def extract_from_equistore(block):
     positions_grad = (positions_grad, positions_grad_samples)
     cell_grad = (cell_grad, cell_grad_samples)
     return values, positions_grad, cell_grad
+
+
+def descriptor_to_cuda(descriptor):
+    from equistore import TensorBlock, TensorMap
+
+    blocks = []
+    for _, block in descriptor:
+        new_block = TensorBlock(
+            values=block.values.cuda(),
+            samples=block.samples,
+            components=block.components,
+            properties=block.properties,
+        )
+
+        for parameter in block.gradients_list():
+            gradient = block.gradient(parameter)
+            new_block.add_gradient(
+                parameter,
+                data=gradient.data.cuda(),
+                samples=gradient.samples,
+                components=gradient.components,
+            )
+
+        blocks.append(new_block)
+
+    return TensorMap(descriptor.keys, blocks)
 
 
 def bench_descriptor(function, descriptor, n_iters=10):
@@ -197,14 +209,27 @@ def bench_random():
     print(f"C++ autograd    =   {1e3 * forward:.3} ms    -   {1e3 * backward:.5} ms")
 
     if torch.cuda.is_available():
+        X = X.to(device="cuda")
+        X_keys = X_keys.to(device="cuda")
+
         forward, backward = bench(
-            torch.ops.reduce_cuda_cpp.reduce_custom_autograd,
-            X.to(device="cuda"),
-            X_keys.to(device="cuda"),
+            torch.ops.reduce_cpp.reduce,
+            X,
+            X_keys,
             0,
         )
         print(
-            f"C++ (cuda) function    =   {1e3 * forward:.3} ms    -   {1e3 * backward:.5} ms"  # noqa
+            f"CUDA function (Cxx)=   {1e3 * forward:.3} ms    -   {1e3 * backward:.5} ms"  # noqa
+        )
+
+        forward, backward = bench(
+            torch.ops.reduce_cpp.reduce_custom_autograd,
+            X,
+            X_keys,
+            0,
+        )
+        print(
+            f"CUDA autograd   =   {1e3 * forward:.3} ms    -   {1e3 * backward:.5} ms"  # noqa
         )
 
 
@@ -213,21 +238,34 @@ def bench_real_data():
     descriptor = create_real_data("random-methane-10k.extxyz", ":300", gradients=False)
     print("implementation  | forward pass | backward pass")
 
-    forward, backward_v, _ = bench_descriptor(reduce_python.reduce, descriptor)
-    print(f"python function =   {1e3 * forward:.5} ms  -  {1e3 * backward_v:.5} ms")
+    # forward, backward_v, _ = bench_descriptor(reduce_python.reduce, descriptor)
+    # print(f"python function =   {1e3 * forward:.5} ms  -  {1e3 * backward_v:.5} ms")
 
-    forward, backward_v, _ = bench_descriptor(
-        reduce_python.reduce_custom_autograd, descriptor
-    )
-    print(f"python autograd =   {1e3 * forward:.5} ms  -  {1e3 * backward_v:.5} ms")
+    # forward, backward_v, _ = bench_descriptor(
+    #     reduce_python.reduce_custom_autograd, descriptor
+    # )
+    # print(f"python autograd =   {1e3 * forward:.5} ms  -  {1e3 * backward_v:.5} ms")
 
-    forward, backward_v, _ = bench_descriptor(torch.ops.reduce_cpp.reduce, descriptor)
-    print(f"c++ function    =   {1e3 * forward:.5} ms  -  {1e3 * backward_v:.5} ms")
+    # forward, backward_v, _ = bench_descriptor(torch.ops.reduce_cpp.reduce, descriptor)
+    # print(f"c++ function    =   {1e3 * forward:.5} ms  -  {1e3 * backward_v:.5} ms")
 
     forward, backward_v, _ = bench_descriptor(
         torch.ops.reduce_cpp.reduce_custom_autograd, descriptor
     )
     print(f"c++ autograd    =   {1e3 * forward:.5} ms  -  {1e3 * backward_v:.5} ms")
+
+    if torch.cuda.is_available():
+        descriptor = descriptor_to_cuda(descriptor)
+
+        forward, backward_v, _ = bench_descriptor(
+            torch.ops.reduce_cpp.reduce, descriptor
+        )
+        print(f"CUDA function   =   {1e3 * forward:.5} ms  -  {1e3 * backward_v:.5} ms")
+
+        forward, backward_v, _ = bench_descriptor(
+            torch.ops.reduce_cpp.reduce_custom_autograd, descriptor
+        )
+        print(f"CUDA autograd   =   {1e3 * forward:.5} ms  -  {1e3 * backward_v:.5} ms")
 
 
 def bench_real_data_w_grad():
@@ -264,6 +302,24 @@ def bench_real_data_w_grad():
     backward_v = f"{1e3 * backward_v:.5} ms"
     backward_g = f"{1e3 * backward_g:.5} ms"
     print(f"C++ autograd    =   {forward}  -    {backward_v}     -   {backward_g}")
+
+    if torch.cuda.is_available():
+        descriptor = descriptor_to_cuda(descriptor)
+        forward, backward_v, backward_g = bench_descriptor(
+            torch.ops.reduce_cpp.reduce, descriptor
+        )
+        forward = f"{1e3 * forward:.5} ms"
+        backward_v = f"{1e3 * backward_v:.5} ms"
+        backward_g = f"{1e3 * backward_g:.5} ms"
+        print(f"CUDA function   =   {forward}  -    {backward_v}     -   {backward_g}")
+
+        forward, backward_v, backward_g = bench_descriptor(
+            torch.ops.reduce_cpp.reduce_custom_autograd, descriptor
+        )
+        forward = f"{1e3 * forward:.5} ms"
+        backward_v = f"{1e3 * backward_v:.5} ms"
+        backward_g = f"{1e3 * backward_g:.5} ms"
+        print(f"CUDA autograd   =   {forward}  -    {backward_v}     -   {backward_g}")
 
 
 if __name__ == "__main__":
