@@ -3,6 +3,8 @@ import time
 
 import numpy as np
 import torch
+import torch.profiler
+from torch.profiler import ProfilerActivity
 
 import load_cpp_extension
 import reduce_python
@@ -74,7 +76,7 @@ def descriptor_to_cuda(descriptor):
     blocks = []
     for _, block in descriptor:
         new_block = TensorBlock(
-            values=block.values.cuda(),
+            values=block.values.detach().cuda().requires_grad_(True),
             samples=block.samples,
             components=block.components,
             properties=block.properties,
@@ -84,7 +86,7 @@ def descriptor_to_cuda(descriptor):
             gradient = block.gradient(parameter)
             new_block.add_gradient(
                 parameter,
-                data=gradient.data.cuda(),
+                data=gradient.data.detach().cuda().requires_grad_(True),
                 samples=gradient.samples,
                 components=gradient.components,
             )
