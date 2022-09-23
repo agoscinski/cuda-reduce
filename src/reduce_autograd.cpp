@@ -1,3 +1,5 @@
+#include <chrono>
+
 #include <torch/torch.h>
 
 #include "reduce.hh"
@@ -8,29 +10,17 @@ torch::autograd::variable_list ReduceValuesAutograd::forward(
     torch::Tensor keys,
     int64_t col
 ) {
+    CHECK_CPU(keys);
     torch::Tensor key = keys.index({"...", col});
 
-    auto unique_result = at::_unique2(key);
+    auto unique_result = at::_unique2(key, /* sorted */ true, /*return_inverse*/ true);
     auto reduced_keys = std::get<0>(unique_result);
+
+    // The mapping of indexes is the returned "inverse" from unique
+    auto indexes = std::get<1>(unique_result);
 
     std::vector<int64_t> reduced_shape = values.sizes().vec();
     reduced_shape[0] = reduced_keys.sizes()[0];
-
-    torch::Tensor indexes = torch::empty(
-        {values.sizes()[0]},
-        torch::TensorOptions()
-            .dtype(torch::kInt32)
-            .device(values.device())
-    );
-
-    auto find_a_better_name_mapping = std::vector<torch::Tensor>();
-    for (int i = 0; i < reduced_keys.sizes()[0]; i++) {
-        auto idx = torch::where(key == reduced_keys[i])[0];
-        indexes.index_put_({idx}, i);
-        // std::cout << idx.device() << std::endl;
-        find_a_better_name_mapping.push_back(idx.to(values.device()));
-    }
-
     torch::Tensor reduced_values = torch::zeros(
         reduced_shape,
         torch::TensorOptions()
@@ -38,7 +28,7 @@ torch::autograd::variable_list ReduceValuesAutograd::forward(
             .device(values.device())
     );
 
-    auto n_samples = values.sizes()[0];
+    auto n_samples = values.size(0);
     auto other_sizes = 1;
     for (int dim=1; dim<values.sizes().size(); dim++) {
         other_sizes *= values.sizes()[dim];
@@ -56,7 +46,8 @@ torch::autograd::variable_list ReduceValuesAutograd::forward(
         reduce_forward_cuda(
             reduced_values,
             values,
-            find_a_better_name_mapping,
+            // only move the indexes to CUDA if we need them here
+            indexes.cuda(),
             n_samples,
             other_sizes
         );
@@ -64,9 +55,7 @@ torch::autograd::variable_list ReduceValuesAutograd::forward(
         throw std::runtime_error("ReduceValuesAutograd::backward is not implemented for this device");
     }
 
-    // reduced_values.index_add_(0, indexes, values);
-
-    ctx->save_for_backward({values, indexes.cpu()});
+    ctx->save_for_backward({values, indexes});
     ctx->mark_non_differentiable({reduced_keys});
 
     return {reduced_values, reduced_keys.reshape({-1, 1}), indexes};
@@ -140,22 +129,11 @@ torch::autograd::variable_list ReduceGradientAutograd::forward(
         new_keys_accessor[grad_i][0] = indexes[sample].item<int32_t>();
     }
 
-    auto unique_result = torch::unique_dim(new_keys, 0);
+    auto unique_result = torch::unique_dim(new_keys, 0, /*sorted*/ true, /*return_inverse*/ true);
     auto reduced_keys = std::get<0>(unique_result);
 
-    torch::Tensor gradient_indexes = torch::empty(
-        {gradient.sizes()[0]},
-        torch::TensorOptions()
-            .dtype(torch::kInt32)
-            .device(gradient.device())
-    );
-
-    for (int i = 0; i < reduced_keys.sizes()[0]; i++) {
-        // FIXME: this might be slow
-        auto mask = new_keys.eq(reduced_keys.index({torch::indexing::Slice(i, i+1)}));
-        auto idx = torch::all(mask, /*dim=*/1);
-        gradient_indexes.index_put_({idx}, i);
-    }
+    // The mapping of indexes is the returned "inverse" from unique
+    auto gradient_indexes = std::get<1>(unique_result);
 
     std::vector<int64_t> reduced_shape = gradient.sizes().vec();
     reduced_shape[0] = reduced_keys.sizes()[0];
@@ -165,9 +143,36 @@ torch::autograd::variable_list ReduceGradientAutograd::forward(
             .dtype(gradient.dtype())
             .device(gradient.device())
     );
-    reduced_gradient.index_add_(0, gradient_indexes, gradient);
 
-    ctx->save_for_backward({gradient, gradient_indexes.cpu()});
+    auto n_samples = gradient.sizes()[0];
+    auto other_sizes = 1;
+    auto reduced_other_sizes = 1;
+    for (int dim=1; dim<gradient.sizes().size(); dim++) {
+        other_sizes *= gradient.sizes()[dim];
+    }
+
+    if (gradient.device().is_cpu()) {
+        reduce_forward_cpu(
+            reduced_gradient,
+            gradient,
+            gradient_indexes,
+            n_samples,
+            other_sizes
+        );
+    } else if (gradient.device().is_cuda()) {
+        reduce_forward_cuda(
+            reduced_gradient,
+            gradient,
+            // only move the indexes to CUDA if we need them here
+            gradient_indexes.cuda(),
+            n_samples,
+            other_sizes
+        );
+    } else {
+        throw std::runtime_error("ReduceValuesAutograd::backward is not implemented for this device");
+    }
+
+    ctx->save_for_backward({gradient, gradient_indexes});
     ctx->mark_non_differentiable({reduced_keys});
 
     return {reduced_gradient, reduced_keys};

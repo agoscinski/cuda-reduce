@@ -14,22 +14,10 @@ static std::vector<torch::Tensor> _reduce_grad(
         new_keys_accessor[grad_i][0] = indexes[sample].item<int32_t>();
     }
 
-    auto unique_result = torch::unique_dim(new_keys, 0);
+    auto unique_result = torch::unique_dim(new_keys, 0, /* sorted */ true, /*return_inverse*/ true);
     auto reduced_keys = std::get<0>(unique_result);
-
-    torch::Tensor grad_indexes = torch::empty(
-        {gradient.sizes()[0]},
-        torch::TensorOptions()
-            .dtype(torch::kInt32)
-            .device(gradient.device())
-    );
-
-    for (int i = 0; i < reduced_keys.sizes()[0]; i++) {
-        // FIXME: this might be slow
-        auto mask = new_keys.eq(reduced_keys.index({torch::indexing::Slice(i, i+1)}));
-        auto idx = torch::all(mask, /*dim=*/1);
-        grad_indexes.index_put_({idx}, i);
-    }
+    // The mapping of indexes is the returned "inverse" from unique
+    auto grad_indexes = std::get<1>(unique_result);
 
     std::vector<int64_t> reduced_shape = gradient.sizes().vec();
     reduced_shape[0] = reduced_keys.sizes()[0];
@@ -39,13 +27,13 @@ static std::vector<torch::Tensor> _reduce_grad(
             .dtype(gradient.dtype())
             .device(gradient.device())
     );
-    reduced_gradient.index_add_(0, grad_indexes, gradient);
+    reduced_gradient.index_add_(0, grad_indexes.to(gradient.device()), gradient);
 
     return {reduced_gradient, reduced_keys};
 }
 
 std::vector<std::vector<torch::Tensor>> reduce(
-    torch::Tensor input,
+    torch::Tensor values,
     torch::Tensor keys,
     int64_t col,
     torch::optional<torch::Tensor> position_grad,
@@ -53,43 +41,21 @@ std::vector<std::vector<torch::Tensor>> reduce(
     torch::optional<torch::Tensor> cell_grad,
     torch::optional<torch::Tensor> cell_grad_keys
 ) {
-    /* Accumulates the entries in the first dimensions of the input tensors
-     * according to the keys in column col with the same value
-     *
-     * @param input The tensor to be reduced @param keys The meta information
-     * about the first dimension of the input @param col The column number of
-     * key in keys to be used for the reduction @return The input tensor with
-     * the accumulated entries in the first dimension
-     */
-
-    // unique is used differently on the c++ frontend
-    // see https://stackoverflow.com/a/70809901
-    // https://pytorch.org/cppdocs/api/function_namespaceat_1a70a940329a0c5d01c1f3e651f7acec98.html
     torch::Tensor key = keys.index({"...", col});
-    auto unique_result = at::_unique2(key);
+    auto unique_result = at::_unique2(key, /* sorted */ true, /*return_inverse*/ true);
     auto reduced_keys = std::get<0>(unique_result);
+    // The mapping of indexes is the returned "inverse" from unique
+    auto indexes = std::get<1>(unique_result);
 
-    torch::Tensor indexes = torch::empty(
-        {input.sizes()[0]},
-        torch::TensorOptions()
-            .dtype(torch::kInt32)
-            .device(input.device())
-    );
-
-    for (int i = 0; i < reduced_keys.sizes()[0]; i++) {
-        auto idx = torch::where(key == reduced_keys[i])[0];
-        indexes.index_put_({idx}, i);
-    }
-
-    std::vector<int64_t> reduced_shape = input.sizes().vec();
+    std::vector<int64_t> reduced_shape = values.sizes().vec();
     reduced_shape[0] = reduced_keys.sizes()[0];
-    torch::Tensor reduced_input = torch::zeros(
+    auto reduced_values = torch::zeros(
         reduced_shape,
         torch::TensorOptions()
-            .dtype(input.dtype())
-            .device(input.device())
+            .dtype(values.dtype())
+            .device(values.device())
     );
-    reduced_input.index_add_(0, indexes, input);
+    reduced_values.index_add_(0, indexes.to(values.device()), values);
 
     auto reduced_position_grad = torch::Tensor();
     auto reduced_position_grad_keys = torch::Tensor();
@@ -121,7 +87,7 @@ std::vector<std::vector<torch::Tensor>> reduce(
 
     return {
         // values
-        {reduced_input, reduced_keys.reshape({-1, 1})},
+        {reduced_values, reduced_keys.reshape({-1, 1})},
         // positions grad
         {reduced_position_grad, reduced_position_grad_keys},
         // cell grad

@@ -161,7 +161,7 @@ if __name__ == "__main__":
     # small test for debugging
     n = 10
     X = torch.rand((n, 3))
-    X_keys = torch.randint(2, (n, 2))
+    X_keys = torch.randint(2, (n, 2), dtype=torch.int32)
     for dim in range(2):
         test_same_result(
             "python / C++",
@@ -190,14 +190,14 @@ if __name__ == "__main__":
                 "python / C++ autograd -- CUDA",
                 reduce_python.reduce,
                 torch.ops.reduce_cpp.reduce_custom_autograd,
-                (X.to(device="cuda"), X_keys.to(device="cuda"), dim),
+                (X.to(device="cuda"), X_keys, dim),
                 verbose=True,
             )
 
     # large tests
     n = 100
     X = torch.rand((n, 10, 6, 6))
-    X_keys = torch.randint(10, (n, 4))
+    X_keys = torch.randint(10, (n, 4), dtype=torch.int32)
     for dim in range(4):
         test_same_result(
             "python / C++",
@@ -223,7 +223,7 @@ if __name__ == "__main__":
 
     # custom autograd checks
     X = torch.rand((n, 60), requires_grad=True, dtype=torch.float64)
-    X_keys = torch.randint(2, (n, 4))
+    X_keys = torch.randint(2, (n, 4), dtype=torch.int32)
     pos_grad = torch.rand((3 * n, 3, 60), requires_grad=True, dtype=torch.float64)
     pos_grad_keys = torch.randint(n, (3 * n, 3), dtype=torch.int32)
     cell_grad = torch.rand((n, 3, 3, 60), requires_grad=True, dtype=torch.float64)
@@ -234,11 +234,8 @@ if __name__ == "__main__":
     if torch.cuda.is_available():
         # autograd on CUDA
         X = X.to(device="cuda")
-        X_keys = X_keys.to(device="cuda")
         pos_grad = pos_grad.to(device="cuda")
-        pos_grad_keys = pos_grad_keys.to(device="cuda")
         cell_grad = cell_grad.to(device="cuda")
-        cell_grad_keys = cell_grad_keys.to(device="cuda")
 
         test_autograd(X, X_keys, 2, pos_grad, pos_grad_keys, cell_grad, cell_grad_keys)
 

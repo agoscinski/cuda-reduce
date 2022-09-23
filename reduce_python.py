@@ -12,19 +12,11 @@ def _reduce_grad(gradient: Tensor, keys: Tensor, indexes: Tensor) -> (Tensor, Te
     for grad_i, grad_key in enumerate(keys):
         new_keys[grad_i, 0] = indexes[grad_key[0]]
 
-    reduced_keys = torch.unique(new_keys, dim=0)
-
-    grad_indexes = torch.empty(gradient.shape[0], dtype=torch.int32, device=device)
-    for i, reduced_key in enumerate(reduced_keys):
-        # FIXME: this might be slow?
-        idx = torch.all(new_keys == reduced_key[None, :], axis=1)
-        grad_indexes.index_put_(
-            (idx,), torch.tensor(i, dtype=torch.int32, device=device)
-        )
+    reduced_keys, grad_indexes = torch.unique(new_keys, dim=0, return_inverse=True)
 
     new_shape = (len(reduced_keys),) + gradient.shape[1:]
     reduced_gradient = torch.zeros(new_shape, dtype=dtype, device=device)
-    reduced_gradient.index_add_(0, grad_indexes, gradient)
+    reduced_gradient.index_add_(0, grad_indexes.to(gradient.device), gradient)
 
     return reduced_gradient, reduced_keys
 
@@ -57,16 +49,11 @@ def reduce(
     dtype = values.dtype
 
     assert keys.dim() == 2, "keys should have only two dimensions"
-    reduced_keys = torch.unique(keys[:, dim])
-
-    indexes = torch.empty(values.shape[0], dtype=torch.int32, device=device)
-    for i, reduced_key in enumerate(reduced_keys):
-        idx = torch.where(keys[:, dim] == reduced_key)[0]
-        indexes.index_put_((idx,), torch.tensor(i, dtype=torch.int32, device=device))
+    reduced_keys, indexes = torch.unique(keys[:, dim], return_inverse=True)
 
     new_shape = (len(reduced_keys),) + values.shape[1:]
     reduced_values = torch.zeros(new_shape, dtype=dtype, device=device)
-    reduced_values.index_add_(0, indexes, values)
+    reduced_values.index_add_(0, indexes.to(values.device), values)
 
     if positions_grad is not None:
         assert positions_grad_keys is not None
