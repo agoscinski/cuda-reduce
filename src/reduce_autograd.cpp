@@ -23,9 +23,12 @@ torch::autograd::variable_list ReduceValuesAutograd::forward(
             .device(values.device())
     );
 
+    auto find_a_better_name_mapping = std::vector<torch::Tensor>();
     for (int i = 0; i < reduced_keys.sizes()[0]; i++) {
         auto idx = torch::where(key == reduced_keys[i])[0];
         indexes.index_put_({idx}, i);
+        // std::cout << idx.device() << std::endl;
+        find_a_better_name_mapping.push_back(idx.to(values.device()));
     }
 
     torch::Tensor reduced_values = torch::zeros(
@@ -53,7 +56,7 @@ torch::autograd::variable_list ReduceValuesAutograd::forward(
         reduce_forward_cuda(
             reduced_values,
             values,
-            indexes,
+            find_a_better_name_mapping,
             n_samples,
             other_sizes
         );

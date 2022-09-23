@@ -74,7 +74,7 @@ void reduce_backward_cpu(
 void reduce_forward_cuda(
     torch::Tensor& reduced,
     const torch::Tensor& full,
-    const torch::Tensor& mapping,
+    const std::vector<torch::Tensor>& find_a_better_name_mapping,
     int n_samples,
     int other_sizes
 );
