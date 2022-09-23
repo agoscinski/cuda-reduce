@@ -4,15 +4,16 @@ import time
 import numpy as np
 import torch
 
-import reduce_python
-
 import load_cpp_extension
+import reduce_python
 
 
 def bench(function, input, input_keys, dim, n_iters=10):
     start = time.time()
     for _ in range(n_iters):
         function(input, input_keys, dim)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
 
     elapsed = time.time() - start
     direct = elapsed / n_iters
@@ -24,6 +25,7 @@ def bench(function, input, input_keys, dim, n_iters=10):
 
         start = time.time()
         summed.backward()
+        torch.cuda.synchronize()
         elapsed += time.time() - start
 
     backward = elapsed / n_iters
@@ -92,6 +94,50 @@ def descriptor_to_cuda(descriptor):
     return TensorMap(descriptor.keys, blocks)
 
 
+def descriptor_sizes(descriptor):
+    sizeof_double = 8
+
+    values_size = 0.0
+    position_gradient_size = 0.0
+    cell_gradient_size = 0.0
+
+    for _, block in descriptor:
+        values_size += len(block.values) * sizeof_double
+
+        if "positions" in block.gradients_list():
+            position_gradient_size += (
+                len(block.gradient("positions").data) * sizeof_double
+            )
+
+        if "cell" in block.gradients_list():
+            position_gradient_size += len(block.gradient("cell").data) * sizeof_double
+
+    return values_size, position_gradient_size, cell_gradient_size
+
+
+def reduced_sizes(descriptor):
+    sizeof_double = 8
+
+    values_size = 0.0
+    position_gradient_size = 0.0
+    cell_gradient_size = 0.0
+
+    for _, block in descriptor:
+        values, positions_grad, cell_grad = extract_from_equistore(block)
+        values, positions_grad, cell_grad = reduce_python.reduce(
+            *values, 0, *positions_grad, *cell_grad
+        )
+
+        values_size += len(values[0]) * sizeof_double
+        if positions_grad[0] is not None:
+            position_gradient_size += len(positions_grad[0]) * sizeof_double
+
+        if cell_grad[0] is not None:
+            cell_gradient_size += len(cell_grad[0]) * sizeof_double
+
+    return values_size, position_gradient_size, cell_gradient_size
+
+
 def bench_descriptor(function, descriptor, n_iters=10):
     start = time.time()
 
@@ -99,6 +145,8 @@ def bench_descriptor(function, descriptor, n_iters=10):
         for _, block in descriptor:
             values, positions_grad, cell_grad = extract_from_equistore(block)
             function(*values, 0, *positions_grad, *cell_grad)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
 
     elapsed = time.time() - start
     direct = elapsed / n_iters
@@ -109,19 +157,27 @@ def bench_descriptor(function, descriptor, n_iters=10):
         zero_grad_descriptor(descriptor)
         for _, block in descriptor:
             values, positions_grad, cell_grad = extract_from_equistore(block)
-            values, positions_grad, _ = function(
+            values, positions_grad, cell_grad = function(
                 *values, 0, *positions_grad, *cell_grad
             )
 
             summed = values[0].sum()
             start = time.time()
+
             summed.backward()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+
             elapsed_values += time.time() - start
 
             if positions_grad[0] is not None:
-                summed = positions_grad[0].sum()
+                summed = positions_grad[0].sum() + cell_grad[0].sum()
                 start = time.time()
+
                 summed.backward()
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+
                 elapsed_grad += time.time() - start
 
     backward_values = elapsed_values / n_iters
@@ -154,6 +210,10 @@ def create_real_data(file, subset, gradients):
     else:
         descriptor = calculator.compute(frames)
 
+    # XXX: remove
+    descriptor.keys_to_samples("species_center")
+    descriptor.keys_to_properties(["species_neighbor_1", "species_neighbor_2"])
+
     blocks = []
     for _, block in descriptor:
         new_block = TensorBlock(
@@ -184,6 +244,16 @@ def zero_grad_descriptor(descriptor):
         for parameter in block.gradients_list():
             gradient = block.gradient(parameter)
             gradient.data.grad = None
+
+
+def format_throughput(value):
+    value /= 1024
+    if value > 1024 * 1024:
+        return f"{value/(1024 * 1024):.4} GiB/s"
+    elif value > 1024:
+        return f"{value/1024:.4} MiB/s"
+    else:
+        return f"{value:.4} KiB/s"
 
 
 def bench_random():
@@ -255,17 +325,25 @@ def bench_real_data():
     print(f"c++ autograd    =   {1e3 * forward:.5} ms  -  {1e3 * backward_v:.5} ms")
 
     if torch.cuda.is_available():
+        values_size, _, _ = descriptor_sizes(descriptor)
+        reduced_values_size, _, _ = reduced_sizes(descriptor)
         descriptor = descriptor_to_cuda(descriptor)
 
         forward, backward_v, _ = bench_descriptor(
             torch.ops.reduce_cpp.reduce, descriptor
         )
         print(f"CUDA function   =   {1e3 * forward:.5} ms  -  {1e3 * backward_v:.5} ms")
+        forward = format_throughput(values_size / forward)
+        backward_v = format_throughput(reduced_values_size / backward_v)
+        print(f"                  {forward}  -  {backward_v}")
 
         forward, backward_v, _ = bench_descriptor(
             torch.ops.reduce_cpp.reduce_custom_autograd, descriptor
         )
         print(f"CUDA autograd   =   {1e3 * forward:.5} ms  -  {1e3 * backward_v:.5} ms")
+        forward = format_throughput(values_size / forward)
+        backward_v = format_throughput(reduced_values_size / backward_v)
+        print(f"                  {forward}  -  {backward_v}")
 
 
 def bench_real_data_w_grad():
@@ -273,27 +351,27 @@ def bench_real_data_w_grad():
     descriptor = create_real_data("random-methane-10k.extxyz", ":100", gradients=True)
     print("implementation  | forward pass | backward values | backward grad")
 
-    forward, backward_v, backward_g = bench_descriptor(reduce_python.reduce, descriptor)
-    forward = f"{1e3 * forward:.5} ms"
-    backward_v = f"{1e3 * backward_v:.5} ms"
-    backward_g = f"{1e3 * backward_g:.5} ms"
-    print(f"python function =   {forward}  -    {backward_v}     -   {backward_g}")
+    # forward, backward_v, backward_g = bench_descriptor(reduce_python.reduce, descriptor)
+    # forward = f"{1e3 * forward:.5} ms"
+    # backward_v = f"{1e3 * backward_v:.5} ms"
+    # backward_g = f"{1e3 * backward_g:.5} ms"
+    # print(f"python function =   {forward}  -    {backward_v}     -   {backward_g}")
 
-    forward, backward_v, backward_g = bench_descriptor(
-        reduce_python.reduce_custom_autograd, descriptor
-    )
-    forward = f"{1e3 * forward:.5} ms"
-    backward_v = f"{1e3 * backward_v:.5} ms"
-    backward_g = f"{1e3 * backward_g:.5} ms"
-    print(f"python autograd =   {forward}  -    {backward_v}     -   {backward_g}")
+    # forward, backward_v, backward_g = bench_descriptor(
+    #     reduce_python.reduce_custom_autograd, descriptor
+    # )
+    # forward = f"{1e3 * forward:.5} ms"
+    # backward_v = f"{1e3 * backward_v:.5} ms"
+    # backward_g = f"{1e3 * backward_g:.5} ms"
+    # print(f"python autograd =   {forward}  -    {backward_v}     -   {backward_g}")
 
-    forward, backward_v, backward_g = bench_descriptor(
-        torch.ops.reduce_cpp.reduce, descriptor
-    )
-    forward = f"{1e3 * forward:.5} ms"
-    backward_v = f"{1e3 * backward_v:.5} ms"
-    backward_g = f"{1e3 * backward_g:.5} ms"
-    print(f"C++ function    =   {forward}  -    {backward_v}     -   {backward_g}")
+    # forward, backward_v, backward_g = bench_descriptor(
+    #     torch.ops.reduce_cpp.reduce, descriptor
+    # )
+    # forward = f"{1e3 * forward:.5} ms"
+    # backward_v = f"{1e3 * backward_v:.5} ms"
+    # backward_g = f"{1e3 * backward_g:.5} ms"
+    # print(f"C++ function    =   {forward}  -    {backward_v}     -   {backward_g}")
 
     forward, backward_v, backward_g = bench_descriptor(
         torch.ops.reduce_cpp.reduce_custom_autograd, descriptor
@@ -304,22 +382,37 @@ def bench_real_data_w_grad():
     print(f"C++ autograd    =   {forward}  -    {backward_v}     -   {backward_g}")
 
     if torch.cuda.is_available():
+        values_size, pos_grad_s, cell_grad_s = descriptor_sizes(descriptor)
+        red_values_size, red_pos_grad_s, red_cell_grad_s = reduced_sizes(descriptor)
+
         descriptor = descriptor_to_cuda(descriptor)
         forward, backward_v, backward_g = bench_descriptor(
             torch.ops.reduce_cpp.reduce, descriptor
         )
-        forward = f"{1e3 * forward:.5} ms"
-        backward_v = f"{1e3 * backward_v:.5} ms"
-        backward_g = f"{1e3 * backward_g:.5} ms"
-        print(f"CUDA function   =   {forward}  -    {backward_v}     -   {backward_g}")
+        forward_time = f"{1e3 * forward:.5} ms"
+        backward_v_time = f"{1e3 * backward_v:.5} ms"
+        backward_g_time = f"{1e3 * backward_g:.5} ms"
+        print(
+            f"CUDA function   =   {forward_time}  -    {backward_v_time}     -   {backward_g_time}"
+        )
+        forward = format_throughput((values_size + pos_grad_s + cell_grad_s) / forward)
+        backward_v = format_throughput(red_values_size / backward_v)
+        backward_g = format_throughput((red_pos_grad_s + red_cell_grad_s) / backward_g)
+        print(f"                  {forward}  -   {backward_v}   -  {backward_g}")
 
         forward, backward_v, backward_g = bench_descriptor(
             torch.ops.reduce_cpp.reduce_custom_autograd, descriptor
         )
-        forward = f"{1e3 * forward:.5} ms"
-        backward_v = f"{1e3 * backward_v:.5} ms"
-        backward_g = f"{1e3 * backward_g:.5} ms"
-        print(f"CUDA autograd   =   {forward}  -    {backward_v}     -   {backward_g}")
+        forward_time = f"{1e3 * forward:.5} ms"
+        backward_v_time = f"{1e3 * backward_v:.5} ms"
+        backward_g_time = f"{1e3 * backward_g:.5} ms"
+        print(
+            f"CUDA autograd   =   {forward_time}  -    {backward_v_time}     -   {backward_g_time}"
+        )
+        forward = format_throughput((values_size + pos_grad_s + cell_grad_s) / forward)
+        backward_v = format_throughput(red_values_size / backward_v)
+        backward_g = format_throughput((red_pos_grad_s + red_cell_grad_s) / backward_g)
+        print(f"                  {forward}  -   {backward_v}   -  {backward_g}")
 
 
 if __name__ == "__main__":
