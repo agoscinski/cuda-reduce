@@ -70,3 +70,12 @@ void reduce_backward_cuda(
     int n_samples,
     int other_sizes
 );
+
+
+void reduce_backward_cudamemcpy(
+    torch::Tensor& full,
+    const torch::Tensor& reduced,
+    const torch::Tensor& mapping,
+    int n_samples,
+    int other_sizes
+);

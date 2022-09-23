@@ -58,3 +58,27 @@ void reduce_backward_cuda(
         );
     }));
 }
+
+void reduce_backward_cudamemcpy(
+    torch::Tensor& full,
+    const torch::Tensor& reduced,
+    const torch::Tensor& mapping,
+    int n_samples,
+    int other_sizes
+) {
+    CHECK_CUDA(full);
+    CHECK_CUDA(reduced);
+    CHECK_CPU(mapping);
+
+    auto to = full.data_ptr<double>();
+    auto from = reduced.data_ptr<double>();
+    int32_t* mapping_ptr = mapping.data_ptr<int32_t>();
+
+    for (int i = 0; i < n_samples; i++)
+    {
+        auto to_i = to + other_sizes*i;
+        auto reduce_id = mapping_ptr[i];
+        auto from_i = from + reduce_id*other_sizes;
+        cudaMemcpy(to_i, from_i, other_sizes*sizeof(double), cudaMemcpyDeviceToDevice);
+    }
+}

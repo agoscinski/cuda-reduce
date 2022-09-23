@@ -36,7 +36,7 @@ torch::autograd::variable_list ReduceValuesAutograd::forward(
     );
     reduced_values.index_add_(0, indexes, values);
 
-    ctx->save_for_backward({values, indexes});
+    ctx->save_for_backward({values, indexes.cpu()});
     ctx->mark_non_differentiable({reduced_keys});
 
     return {reduced_values, reduced_keys.reshape({-1, 1}), indexes};
@@ -76,7 +76,7 @@ torch::autograd::variable_list ReduceValuesAutograd::backward(
                 other_sizes
             );
         } else if (values.device().is_cuda()) {
-            reduce_backward_cuda(
+            reduce_backward_cudamemcpy(
                 values_grad,
                 reduced_values_grad,
                 indexes,
@@ -137,7 +137,7 @@ torch::autograd::variable_list ReduceGradientAutograd::forward(
     );
     reduced_gradient.index_add_(0, gradient_indexes, gradient);
 
-    ctx->save_for_backward({gradient, gradient_indexes});
+    ctx->save_for_backward({gradient, gradient_indexes.cpu()});
     ctx->mark_non_differentiable({reduced_keys});
 
     return {reduced_gradient, reduced_keys};
@@ -178,7 +178,7 @@ torch::autograd::variable_list ReduceGradientAutograd::backward(
                 other_sizes
             );
         } else if (gradient.device().is_cuda()) {
-            reduce_backward_cuda(
+            reduce_backward_cudamemcpy(
                 gradient_grad,
                 reduced_gradient_grad,
                 gradient_indexes,

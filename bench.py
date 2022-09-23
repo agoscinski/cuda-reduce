@@ -194,7 +194,9 @@ def create_real_data(file, subset, gradients):
         import rascaline
         from equistore import TensorBlock, TensorMap
     except ImportError:
+        print("rascaline not found, exiting")
         sys.exit(0)
+
     HYPERS = {
         "cutoff": 1.5,
         "max_radial": 20,
@@ -310,16 +312,16 @@ def bench_real_data():
     descriptor = create_real_data("random-methane-10k.extxyz", ":300", gradients=False)
     print("implementation  | forward pass | backward pass")
 
-    # forward, backward_v, _ = bench_descriptor(reduce_python.reduce, descriptor)
-    # print(f"python function =   {1e3 * forward:.5} ms  -  {1e3 * backward_v:.5} ms")
+    forward, backward_v, _ = bench_descriptor(reduce_python.reduce, descriptor)
+    print(f"python function =   {1e3 * forward:.5} ms  -  {1e3 * backward_v:.5} ms")
 
-    # forward, backward_v, _ = bench_descriptor(
-    #     reduce_python.reduce_custom_autograd, descriptor
-    # )
-    # print(f"python autograd =   {1e3 * forward:.5} ms  -  {1e3 * backward_v:.5} ms")
+    forward, backward_v, _ = bench_descriptor(
+        reduce_python.reduce_custom_autograd, descriptor
+    )
+    print(f"python autograd =   {1e3 * forward:.5} ms  -  {1e3 * backward_v:.5} ms")
 
-    # forward, backward_v, _ = bench_descriptor(torch.ops.reduce_cpp.reduce, descriptor)
-    # print(f"c++ function    =   {1e3 * forward:.5} ms  -  {1e3 * backward_v:.5} ms")
+    forward, backward_v, _ = bench_descriptor(torch.ops.reduce_cpp.reduce, descriptor)
+    print(f"c++ function    =   {1e3 * forward:.5} ms  -  {1e3 * backward_v:.5} ms")
 
     forward, backward_v, _ = bench_descriptor(
         torch.ops.reduce_cpp.reduce_custom_autograd, descriptor
@@ -349,31 +351,31 @@ def bench_real_data():
 
 
 def bench_real_data_w_grad():
-    print("REAL DATA -- with forward gradients")
     descriptor = create_real_data("random-methane-10k.extxyz", ":100", gradients=True)
+    print("REAL DATA -- with forward gradients")
     print("implementation  | forward pass | backward values | backward grad")
 
-    # forward, backward_v, backward_g = bench_descriptor(reduce_python.reduce, descriptor)
-    # forward = f"{1e3 * forward:.5} ms"
-    # backward_v = f"{1e3 * backward_v:.5} ms"
-    # backward_g = f"{1e3 * backward_g:.5} ms"
-    # print(f"python function =   {forward}  -    {backward_v}     -   {backward_g}")
+    forward, backward_v, backward_g = bench_descriptor(reduce_python.reduce, descriptor)
+    forward = f"{1e3 * forward:.5} ms"
+    backward_v = f"{1e3 * backward_v:.5} ms"
+    backward_g = f"{1e3 * backward_g:.5} ms"
+    print(f"python function =   {forward}  -    {backward_v}    -   {backward_g}")
 
-    # forward, backward_v, backward_g = bench_descriptor(
-    #     reduce_python.reduce_custom_autograd, descriptor
-    # )
-    # forward = f"{1e3 * forward:.5} ms"
-    # backward_v = f"{1e3 * backward_v:.5} ms"
-    # backward_g = f"{1e3 * backward_g:.5} ms"
-    # print(f"python autograd =   {forward}  -    {backward_v}     -   {backward_g}")
+    forward, backward_v, backward_g = bench_descriptor(
+        reduce_python.reduce_custom_autograd, descriptor
+    )
+    forward = f"{1e3 * forward:.5} ms"
+    backward_v = f"{1e3 * backward_v:.5} ms"
+    backward_g = f"{1e3 * backward_g:.5} ms"
+    print(f"python autograd =   {forward}   -    {backward_v}     -   {backward_g}")
 
-    # forward, backward_v, backward_g = bench_descriptor(
-    #     torch.ops.reduce_cpp.reduce, descriptor
-    # )
-    # forward = f"{1e3 * forward:.5} ms"
-    # backward_v = f"{1e3 * backward_v:.5} ms"
-    # backward_g = f"{1e3 * backward_g:.5} ms"
-    # print(f"C++ function    =   {forward}  -    {backward_v}     -   {backward_g}")
+    forward, backward_v, backward_g = bench_descriptor(
+        torch.ops.reduce_cpp.reduce, descriptor
+    )
+    forward = f"{1e3 * forward:.5} ms"
+    backward_v = f"{1e3 * backward_v:.5} ms"
+    backward_g = f"{1e3 * backward_g:.5} ms"
+    print(f"C++ function    =   {forward}  -    {backward_v}     -   {backward_g}")
 
     forward, backward_v, backward_g = bench_descriptor(
         torch.ops.reduce_cpp.reduce_custom_autograd, descriptor
@@ -395,12 +397,12 @@ def bench_real_data_w_grad():
         backward_v_time = f"{1e3 * backward_v:.5} ms"
         backward_g_time = f"{1e3 * backward_g:.5} ms"
         print(
-            f"CUDA function   =   {forward_time}  -    {backward_v_time}     -   {backward_g_time}"
+            f"CUDA function   =   {forward_time}  -    {backward_v_time}      -   {backward_g_time}"
         )
         forward = format_throughput((values_size + pos_grad_s + cell_grad_s) / forward)
         backward_v = format_throughput(red_values_size / backward_v)
         backward_g = format_throughput((red_pos_grad_s + red_cell_grad_s) / backward_g)
-        print(f"                  {forward}  -   {backward_v}   -  {backward_g}")
+        print(f"                  {forward}  -   {backward_v}    -  {backward_g}")
 
         forward, backward_v, backward_g = bench_descriptor(
             torch.ops.reduce_cpp.reduce_custom_autograd, descriptor
@@ -409,12 +411,12 @@ def bench_real_data_w_grad():
         backward_v_time = f"{1e3 * backward_v:.5} ms"
         backward_g_time = f"{1e3 * backward_g:.5} ms"
         print(
-            f"CUDA autograd   =   {forward_time}  -    {backward_v_time}     -   {backward_g_time}"
+            f"CUDA autograd   =   {forward_time}  -    {backward_v_time}      -   {backward_g_time}"
         )
         forward = format_throughput((values_size + pos_grad_s + cell_grad_s) / forward)
         backward_v = format_throughput(red_values_size / backward_v)
         backward_g = format_throughput((red_pos_grad_s + red_cell_grad_s) / backward_g)
-        print(f"                  {forward}  -   {backward_v}   -  {backward_g}")
+        print(f"                  {forward}  -   {backward_v}    -  {backward_g}")
 
 
 if __name__ == "__main__":
