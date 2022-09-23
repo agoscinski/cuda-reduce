@@ -1,8 +1,7 @@
 import torch
 
-import reduce_python
-
 import load_cpp_extension
+import reduce_python
 
 
 def test_same_result(
@@ -186,13 +185,14 @@ if __name__ == "__main__":
             verbose=True,
         )
 
-        test_same_result(
-            "python / C++ autograd -- CUDA",
-            reduce_python.reduce,
-            torch.ops.reduce_cpp.reduce_custom_autograd,
-            (X.to(device="cuda"), X_keys.to(device="cuda"), dim),
-            verbose=True,
-        )
+        if torch.cuda.is_available():
+            test_same_result(
+                "python / C++ autograd -- CUDA",
+                reduce_python.reduce,
+                torch.ops.reduce_cpp.reduce_custom_autograd,
+                (X.to(device="cuda"), X_keys.to(device="cuda"), dim),
+                verbose=True,
+            )
 
     # large tests
     n = 100
@@ -231,14 +231,15 @@ if __name__ == "__main__":
 
     test_autograd(X, X_keys, 2, pos_grad, pos_grad_keys, cell_grad, cell_grad_keys)
 
-    # autograd on CUDA
-    X = X.to(device="cuda")
-    X_keys = X_keys.to(device="cuda")
-    pos_grad = pos_grad.to(device="cuda")
-    pos_grad_keys = pos_grad_keys.to(device="cuda")
-    cell_grad = cell_grad.to(device="cuda")
-    cell_grad_keys = cell_grad_keys.to(device="cuda")
+    if torch.cuda.is_available():
+        # autograd on CUDA
+        X = X.to(device="cuda")
+        X_keys = X_keys.to(device="cuda")
+        pos_grad = pos_grad.to(device="cuda")
+        pos_grad_keys = pos_grad_keys.to(device="cuda")
+        cell_grad = cell_grad.to(device="cuda")
+        cell_grad_keys = cell_grad_keys.to(device="cuda")
 
-    test_autograd(X, X_keys, 2, pos_grad, pos_grad_keys, cell_grad, cell_grad_keys)
+        test_autograd(X, X_keys, 2, pos_grad, pos_grad_keys, cell_grad, cell_grad_keys)
 
     print("All tests passed!")
