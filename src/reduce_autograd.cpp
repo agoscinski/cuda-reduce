@@ -34,7 +34,34 @@ torch::autograd::variable_list ReduceValuesAutograd::forward(
             .dtype(values.dtype())
             .device(values.device())
     );
-    reduced_values.index_add_(0, indexes, values);
+
+    auto n_samples = values.sizes()[0];
+    auto other_sizes = 1;
+    for (int dim=1; dim<values.sizes().size(); dim++) {
+        other_sizes *= values.sizes()[dim];
+    }
+
+    if (values.device().is_cpu()) {
+        reduce_forward_cpu(
+            reduced_values,
+            values,
+            indexes,
+            n_samples,
+            other_sizes
+        );
+    } else if (values.device().is_cuda()) {
+        reduce_forward_cuda(
+            reduced_values,
+            values,
+            indexes,
+            n_samples,
+            other_sizes
+        );
+    } else {
+        throw std::runtime_error("ReduceValuesAutograd::backward is not implemented for this device");
+    }
+
+    // reduced_values.index_add_(0, indexes, values);
 
     ctx->save_for_backward({values, indexes.cpu()});
     ctx->mark_non_differentiable({reduced_keys});
